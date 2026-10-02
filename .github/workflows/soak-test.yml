@@ -1,0 +1,47 @@
+name: K6 Full Monthly Quota Test (~33 Hours / 1980 Minutes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'URL mục tiêu cần test'
+        required: true
+        default: 'https://caffemmo.com/api/notifications'
+      vus:
+        description: 'Số Virtual Users (VUs)'
+        required: true
+        default: '400'
+      duration_per_phase:
+        description: 'Thời gian mỗi Phase (Tối đa 5h30m)'
+        required: true
+        default: '5h30m'
+      request_delay:
+        description: 'Thời gian nghỉ giữa mỗi request (giây)'
+        required: true
+        default: '0.02'
+
+jobs:
+  # Chạy 6 phase tuần tự nối tiếp nhau (6 x 5h30m = 33 tiếng = 1.980 phút)
+  soak_test_matrix:
+    name: Phase ${{ matrix.phase }} / 6
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      max-parallel: 1 # Chạy từng phase một, không chạy song song
+      matrix:
+        phase: [1, 2, 3, 4, 5, 6]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 for Phase ${{ matrix.phase }}
+        run: k6 run test-script.js
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          VUS: ${{ github.event.inputs.vus }}
+          DURATION: ${{ github.event.inputs.duration_per_phase }}
+          REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
