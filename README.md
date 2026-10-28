@@ -1,71 +1,104 @@
-# K6 Distributed Load Testing với Xoay IP Ngẫu Nhiên
+# Load test — mỗi site một folder
 
-Hệ thống kiểm thử tải (Stress test / Load test) phân tán bằng Docker với k6, tích hợp cơ chế xoay IP header ngẫu nhiên (`X-Forwarded-For`, `CF-Connecting-IP`, `X-Real-IP`, `True-Client-IP`, `Fastly-Client-IP`) để kiểm tra cơ chế chặn IP (Rate Limiting) của hạ tầng web.
+Mỗi site là một folder tự chứa trong `sites/`: `.env` riêng, script k6 riêng, `docker-compose.yml` riêng, chạy độc lập và không ảnh hưởng nhau.
 
----
+```
+.
+├── sites/
+│   ├── nestinvest/          # POST /api/v1/auth/login (JSON)
+│   │   ├── .env             # gitignored
+│   │   ├── .env.example
+│   │   ├── test-script.js
+│   │   ├── docker-compose.yml
+│   │   ├── run.sh           # Linux / macOS
+│   │   ├── run.ps1          # Windows
+│   │   └── README.md
+│   └── thanhhuyreal/        # PHP login có CSRF
+│       └── ... (cùng cấu trúc)
+├── tools/
+│   ├── probe-ban-bypass.sh
+│   └── probe-ban-bypass.ps1
+├── .gitignore
+└── README.md
+```
 
-## 📁 Cấu trúc thư mục
+## Chạy
 
-*   [docker-compose.yml](file:///c:/Work/dos/docker-compose.yml): Cấu hình chạy k6 service, hỗ trợ scale đa container.
-*   [test-script.js](file:///c:/Work/dos/test-script.js): Kịch bản k6, tự động sinh Public IPv4 ngẫu nhiên cho mỗi request và thu thập metrics (2xx, 429, 403, 5xx).
-*   [.env](file:///c:/Work/dos/.env): File cấu hình mục tiêu (Target URL, số lượng Virtual Users, thời gian test, phương thức HTTP).
-*   [run.ps1](file:///c:/Work/dos/run.ps1): Script PowerShell hỗ trợ chạy nhanh với 1 dòng lệnh.
+### Linux / macOS
 
----
+```bash
+cd sites/nestinvest
+cp .env.example .env        # lần đầu
+./run.sh
+```
 
-## 🚀 Hướng dẫn sử dụng
+Nếu `permission denied`:
 
-### Cách 1: Sử dụng script `run.ps1` (Khuyên dùng trên Windows)
+```bash
+chmod +x run.sh
+```
 
-1. **Chạy test cơ bản (1 instance, đọc cấu hình từ .env):**
-   ```powershell
-   .\run.ps1
-   ```
+### Windows
 
-2. **Chạy phân tán với 4 instances (mỗi instance chạy VUs độc lập):**
-   ```powershell
-   .\run.ps1 -Scale 4
-   ```
+```powershell
+cd sites\nestinvest
+Copy-Item .env.example .env  # lần đầu
+.\run.ps1
+```
 
-3. **Chạy test nhanh với URL cụ thể:**
-   ```powershell
-   .\run.ps1 -Scale 3 -Url "https://your-website.com/api/test" -Vus 20 -Duration "1m"
-   ```
+### Override cấu hình mà không sửa `.env`
 
-4. **Dọn dẹp container:**
-   ```powershell
-   .\run.ps1 -Down
-   ```
+```bash
+./run.sh -e STAGES=30s:100,60s:500 -e MAX_VUS=500
+```
 
----
+```powershell
+.\run.ps1 -Env STAGES=30s:100,60s:500,MAX_VUS=500
+```
 
-### Cách 2: Sử dụng Docker Compose trực tiếp
+### Scale nhiều container
 
-1. **Chỉnh sửa file `.env`:**
-   Mở file [.env](file:///c:/Work/dos/.env) và điền URL trang web của bạn:
-   ```env
-   TARGET_URL=https://your-website.com
-   VUS=10
-   DURATION=30s
-   ```
+```bash
+./run.sh --scale 4     # chỉ đọc cấu hình từ .env
+```
 
-2. **Chạy 1 instance đơn:**
-   ```powershell
-   docker compose run --rm k6-runner
-   ```
+### Dừng / dọn dẹp
 
-3. **Scale phân tán nhiều container song song (ví dụ: 4 instances):**
-   ```powershell
-   docker compose up --scale k6-runner=4
-   ```
+```bash
+./run.sh --down
+```
 
----
+## Thêm site mới
 
-## 📊 Các chỉ số được theo dõi trong báo cáo k6
+1. Tạo folder: `sites/<ten-site>/`
+2. Copy 5 file từ một site có sẵn: `test-script.js`, `docker-compose.yml`, `run.sh`, `run.ps1`, `.env.example`
+3. Sửa `test-script.js` cho đúng flow của site (endpoint, body, cách lấy token…)
+4. `cp .env.example .env` rồi điền
+5. `chmod +x run.sh` (Linux)
 
-Khi test kết thúc, k6 sẽ xuất bảng thống kê gồm:
-*   `success_2xx`: Tổng số request thành công (Mã 200 - 299).
-*   `rate_limited_429`: Số request bị hệ thống chặn do chạm giới hạn Rate Limit (Mã 429).
-*   `blocked_403`: Số request bị tường lửa/WAF cấm (Mã 403).
-*   `errors_5xx`: Số request gây sập/lỗi server (Mã 500 - 504).
-*   `http_req_duration`: Thời gian phản hồi trung bình (p90, p95).
+Mỗi folder là một Docker Compose project riêng (tên project lấy theo tên folder), nên container/network không đụng nhau.
+
+## Yêu cầu
+
+- Docker + Docker Compose v2 (`docker compose`, không phải `docker-compose`)
+- k6 chạy trong container, không cần cài trên máy
+
+### Lưu ý trên Linux
+
+- File `.sh` cần quyền thực thi: `chmod +x run.sh`
+- Repo đã có `.gitattributes` buộc `*.sh` dùng LF, tránh lỗi `bad interpreter: /usr/bin/env: 'bash\r'`
+- Nếu chạy trong WSL, Docker Desktop phải bật WSL integration
+
+## Nguyên tắc chung của cả 2 site
+
+- Đo theo **req/s** (`ramping-arrival-rate`), không theo số VU — VU chỉ là hệ quả của RTT.
+- Chỉ chạy trên hạ tầng bạn sở hữu.
+- `.env` chứa credential và đã được gitignore. Không commit.
+
+## Tools
+
+`tools/probe-ban-bypass.sh` (Linux) / `.ps1` (Windows): kiểm tra rate limit có bị bypass bằng `X-Forwarded-For` / `CF-Connecting-IP` / `Forwarded` hay không. Script này **cố tình** kích hoạt ban IP của máy đang chạy.
+
+```bash
+BASE_URL=https://example.com/api/v1 ./tools/probe-ban-bypass.sh
+```

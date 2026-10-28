@@ -1,0 +1,6 @@
+# Secrets / local config
+.env
+
+# k6 artifacts
+*.log
+summary.json
