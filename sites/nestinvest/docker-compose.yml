@@ -7,3 +7,7 @@ services:
       - ./test-script.js:/scripts/test-script.js:ro
     command: run /scripts/test-script.js
     restart: "no"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
