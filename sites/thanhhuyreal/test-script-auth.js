@@ -11,7 +11,7 @@ import { randomIntBetween, randomItem } from 'https://jslib.k6.io/k6-utils/1.4.0
    - Multi-endpoint: search, listing, detail, API...
    ================================================================== */
 
-const IP_URL  = (__ENV.IP_URL   || 'http://103.211.206.175').replace(/\/+$/, '');
+const IP_URL  = (__ENV.IP_URL   || 'https://thanhhuyreal.com').replace(/\/+$/, '');
 const HOST    = __ENV.SITE_HOST || 'thanhhuyreal.com';
 
 // PHPSESSID: dung env var neu co, neu khong setup() se tu dong login
@@ -19,6 +19,10 @@ const PHPSESSID_ENV = __ENV.PHPSESSID || '';
 
 const IDENTIFIER = __ENV.PHP_IDENTIFIER || 'lonussystem';
 const PASSWORD   = __ENV.PHP_PASSWORD   || 'lonussystem123@';
+
+// Cloudflare bypass
+const CF_CLEARANCE = __ENV.CF_CLEARANCE || '';
+const CF_UA = __ENV.CF_UA || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
 
 // ===== Config =====
 const STAGES_RAW  = __ENV.STAGES      || '30s:500,60s:2000,60s:5000,876000h:5000';
@@ -36,17 +40,25 @@ const STAGES = STAGES_RAW.split(',').map(p => {
 
 // ===== Headers chung (dung session tu setup) =====
 function makeHeaders(session) {
-  return {
-    'Host':              HOST,
-    'Cookie':           `PHPSESSID=${session}`,
-    'User-Agent':       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  const ua = CF_CLEARANCE ? CF_UA : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  
+  let cookie = `PHPSESSID=${session}`;
+  if (CF_CLEARANCE) {
+    cookie += `; cf_clearance=${CF_CLEARANCE}`;
+  }
+  
+  const headers = {
+    'Cookie':           cookie,
+    'User-Agent':       ua,
     'Accept':           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language':  'vi-VN,vi;q=0.9,en;q=0.8',
-    'Accept-Encoding':  'gzip, deflate',
+    'Accept-Encoding':  'gzip, deflate, br',
     'Connection':       'keep-alive',
     'Cache-Control':    'no-cache',
     'Pragma':           'no-cache',
   };
+  
+  return headers;
 }
 
 function makeApiHeaders(session) {
@@ -115,12 +127,19 @@ export function setup() {
   console.log('Auto-login: GET csrf token...');
 
   // Buoc 1: GET trang login - phai co responseType:'text' de body khong bi discard
+  const ua = CF_CLEARANCE ? CF_UA : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  
+  const loginHeaders = {
+    'User-Agent': ua,
+    'Accept':     'text/html,application/xhtml+xml',
+  };
+  
+  if (CF_CLEARANCE) {
+    loginHeaders['Cookie'] = `cf_clearance=${CF_CLEARANCE}`;
+  }
+  
   const loginPageRes = http.get(`${IP_URL}/?auth=login`, {
-    headers: {
-      'Host':       HOST,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-      'Accept':     'text/html,application/xhtml+xml',
-    },
+    headers: loginHeaders,
     responseType: 'text',  // override discardResponseBodies
     timeout: '30s',
   });
@@ -153,15 +172,19 @@ export function setup() {
     `password=${encodeURIComponent(PASSWORD)}`,
   ].join('&');
 
+  let loginCookie = `PHPSESSID=${phpSessId}`;
+  if (CF_CLEARANCE) {
+    loginCookie += `; cf_clearance=${CF_CLEARANCE}`;
+  }
+  
   const loginRes = http.post(`${IP_URL}/model/login`, loginBody, {
     headers: {
-      'Host':              HOST,
-      'Cookie':            `PHPSESSID=${phpSessId}`,
+      'Cookie':            loginCookie,
       'Content-Type':      'application/x-www-form-urlencoded; charset=UTF-8',
       'Accept':            'application/json',
       'X-Requested-With':  'XMLHttpRequest',
-      'User-Agent':        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-      'Referer':           `http://${HOST}/?auth=login`,
+      'User-Agent':        ua,
+      'Referer':           `${IP_URL}/?auth=login`,
     },
     responseType: 'text',  // override discardResponseBodies
     timeout: '30s',
