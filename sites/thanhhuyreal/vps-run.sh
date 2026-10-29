@@ -3,6 +3,9 @@
 
 set -e
 
+# Mode selection
+MODE="${MODE:-auth_api_flood}"  # auth_api_flood | login_flood
+
 # Config (override với env vars nếu cần)
 TARGET_URL="${TARGET_URL:-https://thanhhuyreal.com}"
 USERNAME="${USERNAME:-lonussystem}"
@@ -20,6 +23,7 @@ MAX_ERR_RATE="${MAX_ERR_RATE:-0.9}"
 echo "===================================="
 echo "k6 Load Test - thanhhuyreal.com"
 echo "===================================="
+echo "Mode: $MODE"
 echo ""
 
 # Check FlareSolverr
