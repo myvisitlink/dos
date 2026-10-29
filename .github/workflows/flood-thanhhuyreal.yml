@@ -53,8 +53,9 @@ jobs:
 
       - name: Tang ulimit
         run: |
-          ulimit -n 131072
-          echo "ulimit: $(ulimit -n)"
+          # GitHub runner co the khong cho tang - dung || true de skip
+          ulimit -n 131072 || true
+          echo "ulimit hien tai: $(ulimit -n)"
 
       - name: Runner info
         run: |
