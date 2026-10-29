@@ -10,7 +10,7 @@ services:
     #   - no_proxy=${NO_PROXY}
     volumes:
       - ./test-script.js:/scripts/test-script.js:ro
-    command: run /scripts/test-script.js
+    command: run --no-usage-report /scripts/test-script.js
     restart: always
     stop_grace_period: 120s
     logging:
@@ -20,5 +20,5 @@ services:
         max-file: "3"
     ulimits:
       nofile:
-        soft: 65535
-        hard: 65535
+        soft: 131072
+        hard: 131072

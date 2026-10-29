@@ -44,7 +44,7 @@ const reqDuration = new Trend('req_duration');
 
 // ===== Options =====
 export const options = {
-  discardResponseBodies: false,
+  discardResponseBodies: true,  // không đọc body, tiết kiệm CPU/RAM
   scenarios: {
     flood: {
       executor:        'ramping-arrival-rate',
