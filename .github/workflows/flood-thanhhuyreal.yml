@@ -89,19 +89,42 @@ jobs:
               "maxTimeout": 60000
             }')
           
-          CF_CLEARANCE=$(echo "$RESPONSE" | jq -r '.solution.cookies[] | select(.name=="cf_clearance") | .value')
-          CF_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent')
+          echo "FlareSolverr response:"
+          echo "$RESPONSE" | jq '.' || echo "$RESPONSE"
           
-          if [ -z "$CF_CLEARANCE" ] || [ "$CF_CLEARANCE" = "null" ]; then
-            echo "ERROR: Failed to get cf_clearance"
-            echo "Response:"
-            echo "$RESPONSE" | jq '.'
+          # Check if response is successful
+          STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
+          if [ "$STATUS" != "ok" ]; then
+            echo "ERROR: FlareSolverr failed"
+            echo "Status: $STATUS"
+            echo "Message: $(echo "$RESPONSE" | jq -r '.message // "unknown"')"
             exit 1
+          fi
+          
+          # Extract cookie
+          CF_CLEARANCE=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | select(.name=="cf_clearance") | .value // empty')
+          CF_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent // "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"')
+          
+          if [ -z "$CF_CLEARANCE" ]; then
+            echo "ERROR: cf_clearance not found in response"
+            echo "Available cookies:"
+            echo "$RESPONSE" | jq -r '.solution.cookies[]?.name // "none"'
+            
+            # Try without Cloudflare (maybe site doesn't have challenge)
+            echo "Attempting direct access without cf_clearance..."
+            CF_CLEARANCE="none"
+            CF_UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
           fi
           
           echo "cf_clearance=${CF_CLEARANCE}" >> $GITHUB_OUTPUT
           echo "cf_ua=${CF_UA}" >> $GITHUB_OUTPUT
-          echo "Got cf_clearance: ${CF_CLEARANCE:0:50}... (${#CF_CLEARANCE} chars)"
+          
+          if [ "$CF_CLEARANCE" != "none" ]; then
+            echo "✓ Got cf_clearance: ${CF_CLEARANCE:0:50}... (${#CF_CLEARANCE} chars)"
+          else
+            echo "⚠ No cf_clearance needed (no Cloudflare challenge)"
+          fi
+          
           echo "User-Agent: ${CF_UA:0:80}..."
 
       - name: Start cookie auto-refresh daemon
@@ -128,16 +151,21 @@ jobs:
                 "maxTimeout": 60000
               }')
             
-            NEW_COOKIE=$(echo "$RESPONSE" | jq -r '.solution.cookies[] | select(.name=="cf_clearance") | .value')
-            NEW_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent')
+            STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
+            if [ "$STATUS" = "ok" ]; then
+              NEW_COOKIE=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | select(.name=="cf_clearance") | .value // empty')
+              NEW_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent // ""')
+            else
+              NEW_COOKIE=""
+              NEW_UA=""
+            fi
             
-            if [ -n "$NEW_COOKIE" ] && [ "$NEW_COOKIE" != "null" ]; then
+            if [ -n "$NEW_COOKIE" ] && [ "$NEW_COOKIE" != "null" ] && [ "$NEW_COOKIE" != "none" ]; then
               echo "$NEW_COOKIE" > "$COOKIE_FILE"
               echo "$NEW_UA" > "$UA_FILE"
               echo "[$(date)] ✓ Updated cf_clearance: ${NEW_COOKIE:0:50}..." | tee -a "$LOG_FILE"
             else
-              echo "[$(date)] ✗ Failed to refresh cookie" | tee -a "$LOG_FILE"
-              echo "$RESPONSE" | jq '.' | tee -a "$LOG_FILE"
+              echo "[$(date)] ✗ Failed to refresh cookie (status: $STATUS)" | tee -a "$LOG_FILE"
             fi
           done
           EOFSCRIPT
