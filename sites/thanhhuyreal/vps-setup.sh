@@ -37,7 +37,7 @@ else
 fi
 
 # 4. Network tuning for high load
-echo "[4/6] Tuning network parameters..."
+echo "[4/7] Tuning network parameters..."
 sudo tee /etc/sysctl.d/99-k6-tuning.conf > /dev/null << 'EOF'
 # Increase system file descriptor limit
 fs.file-max = 2097152
@@ -83,7 +83,7 @@ EOF
 echo "ulimit -n 1048576" >> ~/.bashrc
 
 # 5. Start FlareSolverr
-echo "[5/6] Starting FlareSolverr..."
+echo "[5/7] Starting FlareSolverr..."
 docker run -d \
   --name flaresolverr \
   --restart unless-stopped \
@@ -102,7 +102,7 @@ for i in {1..30}; do
 done
 
 # 6. Create working directory
-echo "[6/6] Creating working directory..."
+echo "[6/7] Creating working directory..."
 mkdir -p ~/k6-test
 cd ~/k6-test
 
@@ -115,6 +115,11 @@ else
   echo "Git not installed. You'll need to upload test-script-auth.js manually."
 fi
 
+# 7. Make scripts executable
+echo "[7/7] Setting permissions..."
+cd ~/k6-test/dos/sites/thanhhuyreal 2>/dev/null || cd ~/k6-test
+chmod +x vps-*.sh 2>/dev/null || true
+
 echo ""
 echo "===================================="
 echo "✓ VPS Setup Complete!"
@@ -122,8 +127,10 @@ echo "===================================="
 echo ""
 echo "Next steps:"
 echo "1. Logout and login again (for Docker group)"
-echo "2. Verify FlareSolverr: curl http://localhost:8191/health"
-echo "3. Run test: bash vps-run.sh"
+echo "2. cd ~/k6-test/dos/sites/thanhhuyreal"
+echo "3. Verify FlareSolverr: curl http://localhost:8191/health"
+echo "4. Start test: bash vps-start.sh"
+echo "5. Check status: bash vps-status.sh"
 echo ""
 echo "System info:"
 echo "  CPU cores: $(nproc)"
