@@ -24,7 +24,7 @@ else
     echo "Docker already installed."
 fi
 
-# 3. Install k6
+# 4. Install k6
 echo "[3/6] Installing k6..."
 if ! command -v k6 &> /dev/null; then
     sudo gpg -k

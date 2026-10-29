@@ -10,6 +10,7 @@ Hướng dẫn setup và chạy k6 load test trên VPS (Ubuntu) với FlareSolve
 - **RAM**: Tối thiểu 4GB (khuyên dùng 8GB+ cho 10k VUs)
 - **CPU**: 4 cores+ (càng nhiều càng tốt)
 - **Network**: 1Gbps+ bandwidth
+- **Software**: Docker, k6, tmux (auto-install bởi setup script)
 - **Provider gợi ý**: Vultr, DigitalOcean, Hetzner, AWS EC2
 
 ---
@@ -34,6 +35,7 @@ bash vps-setup.sh
 Script sẽ:
 - Cài Docker
 - Cài k6
+- Cài tmux (session manager)
 - Tune network parameters (ulimit, sysctl)
 - Start FlareSolverr container
 - Cấu hình system
@@ -68,6 +70,35 @@ ulimit -n
 
 ## Chạy Load Test
 
+### Quick Start (Background Persistent)
+
+```bash
+cd ~/dos/sites/thanhhuyreal
+
+# Start test (chạy background, persistent qua SSH disconnect)
+bash vps-start.sh
+
+# Check status
+bash vps-status.sh
+
+# View logs
+bash vps-logs.sh
+
+# Stop test
+bash vps-stop.sh
+```
+
+**Session persists!** Bạn có thể:
+- Tắt SSH/terminal → test vẫn chạy
+- Reconnect SSH → check status/logs
+- Test chạy 6+ giờ không bị gián đoạn
+
+---
+
+### Advanced: Foreground Mode
+
+Nếu muốn xem output trực tiếp (không persist):
+
 ### Cách 1: Chạy với config mặc định
 
 ```bash
@@ -76,29 +107,67 @@ chmod +x vps-run.sh
 bash vps-run.sh
 ```
 
-### Cách 2: Custom config
+### Cách 2: Custom config (background)
 
 ```bash
-# 20k VUs, 30 phút ramp-up, 6 giờ sustained
-STAGES="30m:20000,360m:20000" \
-MAX_VUS="20000" \
-PRE_VUS="2000" \
-bash vps-run.sh
+# Set env vars, then start
+export STAGES="30m:20000,360m:20000"
+export MAX_VUS="20000"
+export PRE_VUS="2000"
+
+bash vps-start.sh
 ```
 
-### Cách 3: Chạy nhiều instance song song
+### Cách 3: Edit .env file
 
 ```bash
-# Terminal 1
-bash vps-run.sh &
+nano .env
+# Sửa STAGES, MAX_VUS, etc.
 
-# Terminal 2
-bash vps-run.sh &
+bash vps-start.sh
+```
 
-# Terminal 3
-bash vps-run.sh &
+---
 
-# => 3x traffic
+## Management Commands
+
+### Start/Stop/Status
+
+```bash
+# Start (background persistent)
+bash vps-start.sh
+
+# Stop (cleanup all)
+bash vps-stop.sh
+
+# Check status (runtime, resources, daemon)
+bash vps-status.sh
+
+# Restart (stop + start)
+bash vps-stop.sh && bash vps-start.sh
+```
+
+### View Logs
+
+```bash
+# View latest logs
+bash vps-logs.sh
+
+# View cookie refresh logs
+tail -f /tmp/cookie-refresh.log
+
+# Attach to live session (Ctrl+B D to detach)
+tmux attach -t k6-thanhhuyreal
+```
+
+### Multiple Tests
+
+```bash
+# Rename session trước khi start thứ 2
+SESSION_NAME="k6-test-2" bash vps-start.sh
+
+# List all sessions
+tmux ls
 ```
 
 ---
@@ -195,21 +264,29 @@ cat results-*.json | jq '.metrics | to_entries[] | select(.value.type == "counte
 ```bash
 docker logs flaresolverr
 docker restart flaresolverr
+
+# Hoặc start lại
+docker start flaresolverr
 ```
 
-### k6 báo lỗi "too many open files"
+### Session không tồn tại
 
 ```bash
-ulimit -n 1048576
-# Hoặc logout/login lại
+# Check nếu tmux đang chạy
+tmux ls
+
+# Nếu bị crash, start lại
+bash vps-start.sh
 ```
 
 ### Cookie cf_clearance hết hạn giữa chừng
 
+**Không cần lo!** Daemon tự động refresh mỗi 25 phút.
+
+Check daemon:
 ```bash
-# Stop test (Ctrl+C)
-# Restart - script sẽ tự get cookie mới
-bash vps-run.sh
+ps aux | grep refresh-cookie
+cat /tmp/cookie-refresh.log
 ```
 
 ### VPS bị lag/chậm
@@ -237,22 +314,51 @@ iostat -x 1
 
 ## Advanced: Multiple VPS
 
-Nếu muốn tăng traffic x10, thuê nhiều VPS:
+Nếu muốn tăng traffic x10, thuê nhiều VPS và chạy từng cái:
 
 ```bash
-# VPS 1: 20k VUs
-STAGES="15m:20000,360m:20000" MAX_VUS="20000" bash vps-run.sh
+# VPS 1:
+bash vps-start.sh
 
-# VPS 2: 20k VUs  
-STAGES="15m:20000,360m:20000" MAX_VUS="20000" bash vps-run.sh
+# VPS 2:
+bash vps-start.sh
 
-# VPS 3: 20k VUs
-STAGES="15m:20000,360m:20000" MAX_VUS="20000" bash vps-run.sh
+# VPS 3:
+bash vps-start.sh
 
-# => 60k VUs total
+# => 3x VPS = 3x traffic, mỗi VPS có IP riêng
 ```
 
 **Lưu ý**: Mỗi VPS có IP khác nhau → bypass Cloudflare tốt hơn
+
+---
+
+## SSH Disconnect Safety
+
+**tmux session = persistent!** Nghĩa là:
+
+✅ SSH disconnect → test vẫn chạy  
+✅ VPS reboot → tmux session mất (cần start lại)  
+✅ `vps-stop.sh` → test stop  
+✅ Ctrl+C trong tmux → test stop  
+
+**Best practice:**
+```bash
+# Start test
+bash vps-start.sh
+
+# Disconnect SSH an toàn
+exit
+
+# Reconnect sau vài giờ
+ssh user@vps
+
+# Check status
+bash vps-status.sh
+
+# View logs
+bash vps-logs.sh
+```
 
 ---
 
@@ -289,8 +395,17 @@ STAGES="15m:20000,360m:20000" MAX_VUS="20000" bash vps-run.sh
 
 Workflow hoàn chỉnh:
 1. ✅ Setup VPS với `vps-setup.sh`
-2. ✅ Chạy test với `vps-run.sh`
-3. ✅ Monitor realtime metrics
-4. ✅ Scale lên nhiều VPS nếu cần
+2. ✅ Start test với `vps-start.sh` (background persistent)
+3. ✅ Disconnect SSH an toàn
+4. ✅ Reconnect bất cứ lúc nào để check `vps-status.sh`
+5. ✅ Scale lên nhiều VPS nếu cần
+
+**Commands cheat sheet:**
+```bash
+bash vps-start.sh   # Start
+bash vps-stop.sh    # Stop
+bash vps-status.sh  # Status
+bash vps-logs.sh    # Logs
+```
 
 Questions? Check logs hoặc DM.
