@@ -19,6 +19,10 @@ on:
         description: 'Stages (de trong dung mac dinh)'
         required: false
         default: ''
+      proxy:
+        description: 'Proxy URL (de trong = khong dung proxy). VD: http://user:pass@host:port'
+        required: false
+        default: ''
 
 jobs:
   prepare:
@@ -67,7 +71,6 @@ jobs:
       - name: Run k6
         env:
           TARGET_URL:       ${{ github.event.inputs.target_url || 'http://103.211.206.175/' }}
-          # 30s ramp len 500, 60s len 5000, giu mai (6h = thoi gian toi da cua runner)
           STAGES:           ${{ github.event.inputs.stages || '30s:500,60s:5000,360m:5000' }}
           START_RATE:       "200"
           PRE_VUS:          "500"
@@ -76,6 +79,14 @@ jobs:
           REQUEST_DELAY:    "0"
           MAX_5XX_RATE:     "0.5"
           MAX_TIMEOUT_RATE: "0.8"
+          # k6 tu dong doc HTTP_PROXY / HTTPS_PROXY - de trong = khong dung proxy
+          HTTP_PROXY:       ${{ github.event.inputs.proxy }}
+          HTTPS_PROXY:      ${{ github.event.inputs.proxy }}
         run: |
           ulimit -n 131072 || true
+          if [ -n "$HTTP_PROXY" ]; then
+            echo "Dung proxy: $HTTP_PROXY"
+          else
+            echo "Khong dung proxy (direct)"
+          fi
           k6 run --no-usage-report sites/thanhhuyreal/test-script.js
