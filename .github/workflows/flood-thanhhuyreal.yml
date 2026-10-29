@@ -77,5 +77,5 @@ jobs:
           MAX_5XX_RATE:     "0.5"
           MAX_TIMEOUT_RATE: "0.8"
         run: |
-          ulimit -n 131072
+          ulimit -n 131072 || true
           k6 run --no-usage-report sites/thanhhuyreal/test-script.js
