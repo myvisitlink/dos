@@ -17,9 +17,27 @@ const HOST    = __ENV.SITE_HOST || 'thanhhuyreal.com';
 const IDENTIFIER = __ENV.PHP_IDENTIFIER || 'lonussystem';
 const PASSWORD   = __ENV.PHP_PASSWORD   || 'lonussystem123@';
 
-// Cloudflare bypass cookies from env (from FlareSolverr)
-const CF_CLEARANCE = __ENV.CF_CLEARANCE || '';
-const CF_UA = __ENV.CF_UA || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36';
+// Cookie files (updated by background daemon)
+const CF_CLEARANCE_FILE = __ENV.CF_CLEARANCE_FILE || '/tmp/cf_clearance.txt';
+const CF_UA_FILE = __ENV.CF_UA_FILE || '/tmp/cf_ua.txt';
+
+// Helper: Read cookie from file (k6 built-in open() function)
+function getCfClearance() {
+  try {
+    return open(CF_CLEARANCE_FILE).trim();
+  } catch (e) {
+    console.warn(`Cannot read ${CF_CLEARANCE_FILE}: ${e}`);
+    return '';
+  }
+}
+
+function getCfUserAgent() {
+  try {
+    return open(CF_UA_FILE).trim();
+  } catch (e) {
+    return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36';
+  }
+}
 
 // ===== Config =====
 const STAGES_RAW  = __ENV.STAGES      || '30s:500,60s:2000,60s:5000,360m:5000';
@@ -37,8 +55,11 @@ const STAGES = STAGES_RAW.split(',').map(p => {
 
 // No getCfClearance() function - cookies passed via env vars
 
-// ===== Headers chung (dung session + cf_clearance) =====
-function makeHeaders(session, cfClearance, userAgent) {
+// ===== Headers chung (đọc cookie fresh mỗi request) =====
+function makeHeaders(session) {
+  const cfClearance = getCfClearance();
+  const userAgent = getCfUserAgent();
+  
   let cookie = `PHPSESSID=${session}`;
   if (cfClearance) {
     cookie += `; cf_clearance=${cfClearance}`;
@@ -58,8 +79,8 @@ function makeHeaders(session, cfClearance, userAgent) {
   return headers;
 }
 
-function makeApiHeaders(session, cfClearance, userAgent) {
-  return Object.assign({}, makeHeaders(session, cfClearance, userAgent), {
+function makeApiHeaders(session) {
+  return Object.assign({}, makeHeaders(session), {
     'Accept':           'application/json, text/javascript, */*; q=0.01',
     'X-Requested-With': 'XMLHttpRequest',
     'Content-Type':     'application/x-www-form-urlencoded; charset=UTF-8',
@@ -108,29 +129,32 @@ const reqErr   = new Counter('req_error');
 const errRate  = new Rate('error_rate');
 const reqDur   = new Trend('req_duration');
 
-// ===== Setup: Login 1 lần với cf_clearance từ env =====
+// ===== Setup: Login 1 lần với cf_clearance từ file =====
 export function setup() {
   console.log('=== SETUP: Login to get PHPSESSID ===');
   console.log(`Target: ${IP_URL}`);
   console.log(`Username: ${IDENTIFIER}`);
   
-  if (!CF_CLEARANCE || CF_CLEARANCE === 'none') {
+  const cfClearance = getCfClearance();
+  const cfUserAgent = getCfUserAgent();
+  
+  if (!cfClearance) {
     console.warn('⚠ No cf_clearance, will try without it');
   } else {
-    console.log(`✓ cf_clearance: ${CF_CLEARANCE.substring(0, 50)}...`);
+    console.log(`✓ cf_clearance: ${cfClearance.substring(0, 50)}...`);
   }
-  console.log(`User-Agent: ${CF_UA.substring(0, 80)}...`);
+  console.log(`User-Agent: ${cfUserAgent.substring(0, 80)}...`);
   
   // Login để lấy PHPSESSID
   console.log('=== Step 1: GET login page for CSRF ===');
   
   const loginHeaders = {
-    'User-Agent': CF_UA,
+    'User-Agent': cfUserAgent,
     'Accept': 'text/html,application/xhtml+xml',
   };
   
-  if (CF_CLEARANCE && CF_CLEARANCE !== 'none') {
-    loginHeaders['Cookie'] = `cf_clearance=${CF_CLEARANCE}`;
+  if (cfClearance) {
+    loginHeaders['Cookie'] = `cf_clearance=${cfClearance}`;
   }
   
   const loginPageRes = http.get(`${IP_URL}/?auth=login`, {
@@ -142,14 +166,14 @@ export function setup() {
   if (loginPageRes.status !== 200) {
     console.error(`GET login page failed: status=${loginPageRes.status}`);
     console.error(`Body preview: ${(loginPageRes.body || '').substring(0, 300)}`);
-    return { session: '', cfClearance: CF_CLEARANCE, userAgent: CF_UA };
+    return { session: '' };
   }
 
   // Extract csrf_token
   const csrfMatch = loginPageRes.body.match(/name="csrf_token"\s+value="([^"]+)"/);
   if (!csrfMatch) {
     console.error('csrf_token not found in HTML');
-    return { session: '', cfClearance: CF_CLEARANCE, userAgent: CF_UA };
+    return { session: '' };
   }
   const csrfToken = csrfMatch[1];
   console.log(`✓ CSRF: ${csrfToken.substring(0, 20)}...`);
@@ -171,8 +195,8 @@ export function setup() {
   ].join('&');
 
   let loginCookie = `PHPSESSID=${phpSessId}`;
-  if (CF_CLEARANCE && CF_CLEARANCE !== 'none') {
-    loginCookie += `; cf_clearance=${CF_CLEARANCE}`;
+  if (cfClearance) {
+    loginCookie += `; cf_clearance=${cfClearance}`;
   }
   
   const loginRes = http.post(`${IP_URL}/model/login`, loginBody, {
@@ -181,7 +205,7 @@ export function setup() {
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'Accept': 'application/json',
       'X-Requested-With': 'XMLHttpRequest',
-      'User-Agent': CF_UA,
+      'User-Agent': cfUserAgent,
       'Referer': `${IP_URL}/?auth=login`,
       'Origin': IP_URL,
     },
@@ -197,12 +221,12 @@ export function setup() {
   if (json && json.status === true) {
     console.log(`✓✓✓ LOGIN SUCCESS! ✓✓✓`);
     console.log(`Session: ${phpSessId.substring(0, 16)}...`);
-    return { session: phpSessId, cfClearance: CF_CLEARANCE, userAgent: CF_UA };
+    return { session: phpSessId };
   } else {
     const msg = json ? JSON.stringify(json) : (loginRes.body || '').substring(0, 200);
     console.warn(`Login response: ${msg}`);
     console.warn('Will continue anyway - some endpoints may work without full auth');
-    return { session: phpSessId, cfClearance: CF_CLEARANCE, userAgent: CF_UA };
+    return { session: phpSessId };
   }
 }
 
@@ -227,7 +251,7 @@ export const options = {
 
 // ===== Hit trang HTML nặng =====
 function hitPage(data) {
-  const HEADERS = makeHeaders(data.session, data.cfClearance, data.userAgent);
+  const HEADERS = makeHeaders(data.session);  // Cookie đọc fresh từ file
   const fn  = HEAVY_PAGES[randomIntBetween(0, HEAVY_PAGES.length - 1)];
   const url = fn();
   const res = http.get(url, { headers: HEADERS, timeout: TIMEOUT, tags: { name: 'page' } });
@@ -246,7 +270,7 @@ function hitPage(data) {
 
 // ===== Hit API POST nặng =====
 function hitApi(data) {
-  const API_HEADERS = makeApiHeaders(data.session, data.cfClearance, data.userAgent);
+  const API_HEADERS = makeApiHeaders(data.session);  // Cookie đọc fresh từ file
   const fn  = HEAVY_APIS[randomIntBetween(0, HEAVY_APIS.length - 1)];
   const { url, body } = fn();
   const res = http.post(url, body, { headers: API_HEADERS, timeout: TIMEOUT, tags: { name: 'api' } });

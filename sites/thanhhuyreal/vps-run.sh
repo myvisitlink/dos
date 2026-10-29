@@ -61,6 +61,55 @@ fi
 
 echo "✓ User-Agent: ${CF_UA:0:80}..."
 
+# Write cookies to files for k6
+echo "$CF_CLEARANCE" > /tmp/cf_clearance.txt
+echo "$CF_UA" > /tmp/cf_ua.txt
+
+# Start background daemon to refresh cookie every 25 minutes
+echo ""
+echo "Starting cookie refresh daemon..."
+
+cat > /tmp/refresh-cookie.sh << 'DAEMON_SCRIPT'
+#!/bin/bash
+while true; do
+  sleep 1500  # 25 minutes
+  
+  echo "[$(date)] Refreshing cf_clearance cookie..."
+  
+  RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
+    -H "Content-Type: application/json" \
+    -d '{
+      "cmd": "request.get",
+      "url": "https://thanhhuyreal.com",
+      "maxTimeout": 60000
+    }')
+  
+  STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
+  if [ "$STATUS" = "ok" ]; then
+    NEW_CF_CLEARANCE=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | select(.name=="cf_clearance") | .value // empty')
+    NEW_CF_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent // ""')
+    
+    if [ -n "$NEW_CF_CLEARANCE" ]; then
+      echo "$NEW_CF_CLEARANCE" > /tmp/cf_clearance.txt
+      echo "$NEW_CF_UA" > /tmp/cf_ua.txt
+      echo "[$(date)] ✓ Cookie refreshed: ${NEW_CF_CLEARANCE:0:50}..."
+    else
+      echo "[$(date)] ⚠ No cf_clearance in response"
+    fi
+  else
+    echo "[$(date)] ✗ FlareSolverr request failed: $STATUS"
+  fi
+done
+DAEMON_SCRIPT
+
+chmod +x /tmp/refresh-cookie.sh
+nohup /tmp/refresh-cookie.sh > /tmp/cookie-refresh.log 2>&1 &
+echo $! > /tmp/cookie-refresh.pid
+
+echo "✓ Cookie refresh daemon started (PID: $(cat /tmp/cookie-refresh.pid))"
+echo "  - Refresh interval: 25 minutes"
+echo "  - Log file: /tmp/cookie-refresh.log"
+
 # System info
 echo ""
 echo "[3/3] System info:"
@@ -75,6 +124,19 @@ echo "  Stages: $STAGES"
 echo "  Max VUs: $MAX_VUS"
 echo ""
 
+# Cleanup function
+cleanup() {
+  echo ""
+  echo "Cleaning up..."
+  if [ -f /tmp/cookie-refresh.pid ]; then
+    kill $(cat /tmp/cookie-refresh.pid) 2>/dev/null || true
+    rm /tmp/cookie-refresh.pid
+  fi
+  echo "✓ Cleanup done"
+}
+
+trap cleanup EXIT INT TERM
+
 # Run k6
 echo "===================================="
 echo "Starting k6 load test..."
@@ -87,8 +149,8 @@ IP_URL="$TARGET_URL" \
 SITE_HOST="thanhhuyreal.com" \
 PHP_IDENTIFIER="$USERNAME" \
 PHP_PASSWORD="$PASSWORD" \
-CF_CLEARANCE="$CF_CLEARANCE" \
-CF_UA="$CF_UA" \
+CF_CLEARANCE_FILE="/tmp/cf_clearance.txt" \
+CF_UA_FILE="/tmp/cf_ua.txt" \
 STAGES="$STAGES" \
 START_RATE="$START_RATE" \
 PRE_VUS="$PRE_VUS" \
@@ -104,4 +166,9 @@ echo ""
 echo "===================================="
 echo "✓ Test completed!"
 echo "Results saved to: $K6_OUT_JSON"
+echo ""
+if [ -f /tmp/cookie-refresh.log ]; then
+  echo "Cookie refresh log (last 20 lines):"
+  tail -n 20 /tmp/cookie-refresh.log
+fi
 echo "===================================="
