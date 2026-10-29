@@ -114,13 +114,14 @@ export function setup() {
 
   console.log('Auto-login: GET csrf token...');
 
-  // Buoc 1: GET trang login lay PHPSESSID + csrf_token
+  // Buoc 1: GET trang login - phai co responseType:'text' de body khong bi discard
   const loginPageRes = http.get(`${IP_URL}/?auth=login`, {
     headers: {
       'Host':       HOST,
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
       'Accept':     'text/html,application/xhtml+xml',
     },
+    responseType: 'text',  // override discardResponseBodies
     timeout: '30s',
   });
 
@@ -138,10 +139,12 @@ export function setup() {
   const csrfToken = csrfMatch[1];
   console.log('CSRF: ' + csrfToken.substring(0, 10) + '...');
 
-  // Lay PHPSESSID tu cookie
-  const cookieHeader = loginPageRes.headers['Set-Cookie'] || '';
-  const sessMatch = cookieHeader.match(/PHPSESSID=([^;]+)/);
-  const phpSessId = sessMatch ? sessMatch[1] : '';
+  // Lay PHPSESSID tu cookies cua response
+  const cookiesObj = loginPageRes.cookies;
+  const phpSessId = (cookiesObj['PHPSESSID'] && cookiesObj['PHPSESSID'][0])
+    ? cookiesObj['PHPSESSID'][0].value
+    : '';
+  console.log('PHPSESSID: ' + (phpSessId ? phpSessId.substring(0, 8) + '...' : 'KHONG CO'));
 
   // Buoc 2: POST login
   const loginBody = [
@@ -160,6 +163,7 @@ export function setup() {
       'User-Agent':        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
       'Referer':           `http://${HOST}/?auth=login`,
     },
+    responseType: 'text',  // override discardResponseBodies
     timeout: '30s',
   });
 
@@ -172,7 +176,7 @@ export function setup() {
     console.log('Login THANH CONG! Session: ' + phpSessId.substring(0, 8) + '...');
     return { session: phpSessId };
   } else {
-    const msg = json ? JSON.stringify(json) : loginRes.body.substring(0, 100);
+    const msg = json ? JSON.stringify(json) : (loginRes.body || '').substring(0, 100);
     console.warn('Login that bai: ' + msg);
     return { session: phpSessId }; // Dung session du chua xac nhan duoc
   }
