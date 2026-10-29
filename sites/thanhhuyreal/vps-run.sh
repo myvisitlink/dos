@@ -3,11 +3,11 @@
 
 set -e
 
-# Config
-TARGET_URL="https://thanhhuyreal.com"
-USERNAME="lonussystem"
-PASSWORD="lonussystem123@"
-FLARESOLVERR_URL="http://localhost:8191"
+# Config (override với env vars nếu cần)
+TARGET_URL="${TARGET_URL:-https://thanhhuyreal.com}"
+USERNAME="${USERNAME:-lonussystem}"
+PASSWORD="${PASSWORD:-lonussystem123@}"
+FLARESOLVERR_URL="${FLARESOLVERR_URL:-http://localhost:8191}"
 
 # Test config
 STAGES="${STAGES:-30s:500,60s:2000,120s:5000,360m:5000}"
@@ -24,9 +24,12 @@ echo ""
 
 # Check FlareSolverr
 echo "[1/3] Checking FlareSolverr..."
-if ! curl -sf http://localhost:8191/health > /dev/null 2>&1; then
-  echo "❌ FlareSolverr not running!"
-  echo "Start it with: docker start flaresolverr"
+echo "  URL: $FLARESOLVERR_URL"
+if ! curl -sf ${FLARESOLVERR_URL}/health > /dev/null 2>&1; then
+  echo "❌ FlareSolverr not running at $FLARESOLVERR_URL!"
+  if [ "$FLARESOLVERR_URL" = "http://localhost:8191" ]; then
+    echo "Start it with: docker start flaresolverr"
+  fi
   exit 1
 fi
 echo "✓ FlareSolverr running"
@@ -34,7 +37,7 @@ echo "✓ FlareSolverr running"
 # Get cf_clearance
 echo ""
 echo "[2/3] Getting cf_clearance cookie..."
-RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
+RESPONSE=$(curl -s -X POST ${FLARESOLVERR_URL}/v1 \
   -H "Content-Type: application/json" \
   -d "{
     \"cmd\": \"request.get\",
@@ -69,35 +72,38 @@ echo "$CF_UA" > /tmp/cf_ua.txt
 echo ""
 echo "Starting cookie refresh daemon..."
 
-cat > /tmp/refresh-cookie.sh << 'DAEMON_SCRIPT'
+cat > /tmp/refresh-cookie.sh << DAEMON_SCRIPT
 #!/bin/bash
+FLARESOLVERR_URL="${FLARESOLVERR_URL}"
+TARGET_URL="${TARGET_URL}"
+
 while true; do
   sleep 1500  # 25 minutes
   
   echo "[$(date)] Refreshing cf_clearance cookie..."
   
-  RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
-    -H "Content-Type: application/json" \
-    -d '{
-      "cmd": "request.get",
-      "url": "https://thanhhuyreal.com",
-      "maxTimeout": 60000
-    }')
+  RESPONSE=\$(curl -s -X POST \${FLARESOLVERR_URL}/v1 \\
+    -H "Content-Type: application/json" \\
+    -d "{
+      \"cmd\": \"request.get\",
+      \"url\": \"\${TARGET_URL}\",
+      \"maxTimeout\": 60000
+    }")
   
-  STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
-  if [ "$STATUS" = "ok" ]; then
-    NEW_CF_CLEARANCE=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | select(.name=="cf_clearance") | .value // empty')
-    NEW_CF_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent // ""')
+  STATUS=\$(echo "\$RESPONSE" | jq -r '.status // "error"')
+  if [ "\$STATUS" = "ok" ]; then
+    NEW_CF_CLEARANCE=\$(echo "\$RESPONSE" | jq -r '.solution.cookies[]? | select(.name=="cf_clearance") | .value // empty')
+    NEW_CF_UA=\$(echo "\$RESPONSE" | jq -r '.solution.userAgent // ""')
     
-    if [ -n "$NEW_CF_CLEARANCE" ]; then
-      echo "$NEW_CF_CLEARANCE" > /tmp/cf_clearance.txt
-      echo "$NEW_CF_UA" > /tmp/cf_ua.txt
-      echo "[$(date)] ✓ Cookie refreshed: ${NEW_CF_CLEARANCE:0:50}..."
+    if [ -n "\$NEW_CF_CLEARANCE" ]; then
+      echo "\$NEW_CF_CLEARANCE" > /tmp/cf_clearance.txt
+      echo "\$NEW_CF_UA" > /tmp/cf_ua.txt
+      echo "[\$(date)] ✓ Cookie refreshed: \${NEW_CF_CLEARANCE:0:50}..."
     else
-      echo "[$(date)] ⚠ No cf_clearance in response"
+      echo "[\$(date)] ⚠ No cf_clearance in response"
     fi
   else
-    echo "[$(date)] ✗ FlareSolverr request failed: $STATUS"
+    echo "[\$(date)] ✗ FlareSolverr request failed: \$STATUS"
   fi
 done
 DAEMON_SCRIPT
