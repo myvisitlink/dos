@@ -34,7 +34,7 @@ jobs:
         run: |
           COUNT=${{ github.event.inputs.runners }}
           MATRIX=$(python3 -c "import json; print(json.dumps(list(range(1, int('$COUNT')+1))))")
-          echo "matrix=$GITHUB_OUTPUT"
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
   flood:
     needs: prepare
