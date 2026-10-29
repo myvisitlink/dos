@@ -112,6 +112,8 @@ jobs:
           MAX_VUS:          ${{ github.event.inputs.max_vus || '8000' }}
           REQUEST_TIMEOUT:  "30s"
           MAX_ERR_RATE:     "0.9"
+          HTTP_PROXY:       ${{ github.event.inputs.proxy }}
+          HTTPS_PROXY:      ${{ github.event.inputs.proxy }}
         run: |
           ulimit -n 131072 || true
           k6 run --no-usage-report sites/thanhhuyreal/test-script-auth.js
