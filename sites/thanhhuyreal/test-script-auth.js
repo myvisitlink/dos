@@ -20,26 +20,15 @@ const PHPSESSID_ENV = __ENV.PHPSESSID || '';
 const IDENTIFIER = __ENV.PHP_IDENTIFIER || 'lonussystem';
 const PASSWORD   = __ENV.PHP_PASSWORD   || 'lonussystem123@';
 
-// Cloudflare bypass (auto-refresh)
+// Cloudflare bypass (auto-refresh from env var)
 const CF_CLEARANCE_FILE = __ENV.CF_CLEARANCE_FILE || '';
 const CF_UA_FILE = __ENV.CF_UA_FILE || '';
 
 let CF_CLEARANCE = __ENV.CF_CLEARANCE || '';
 let CF_UA = __ENV.CF_UA || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
 
-// Read from file if available (for auto-refresh)
-if (CF_CLEARANCE_FILE && !CF_CLEARANCE) {
-  try {
-    const fs = require('fs');
-    CF_CLEARANCE = fs.readFileSync(CF_CLEARANCE_FILE, 'utf8').trim();
-    if (CF_UA_FILE) {
-      CF_UA = fs.readFileSync(CF_UA_FILE, 'utf8').trim();
-    }
-    console.log(`Loaded cf_clearance from ${CF_CLEARANCE_FILE}: ${CF_CLEARANCE.substring(0, 50)}...`);
-  } catch (e) {
-    console.warn(`Cannot read ${CF_CLEARANCE_FILE}: ${e.message}`);
-  }
-}
+// Note: k6 cannot read files dynamically, so we rely on env vars updated externally
+console.log(`Using CF_CLEARANCE: ${CF_CLEARANCE ? CF_CLEARANCE.substring(0, 50) + '...' : 'not set'}`);
 
 // ===== Config =====
 const STAGES_RAW  = __ENV.STAGES      || '30s:500,60s:2000,60s:5000,876000h:5000';
@@ -57,27 +46,10 @@ const STAGES = STAGES_RAW.split(',').map(p => {
 
 // ===== Headers chung (dung session tu setup) =====
 function makeHeaders(session) {
-  // Re-read cookie & UA from file if auto-refresh is enabled
-  if (CF_CLEARANCE_FILE) {
-    try {
-      const fs = require('fs');
-      const newCookie = fs.readFileSync(CF_CLEARANCE_FILE, 'utf8').trim();
-      if (newCookie && newCookie !== CF_CLEARANCE) {
-        CF_CLEARANCE = newCookie;
-        if (CF_UA_FILE) {
-          CF_UA = fs.readFileSync(CF_UA_FILE, 'utf8').trim();
-        }
-        console.log(`Cookie refreshed: ${CF_CLEARANCE.substring(0, 30)}...`);
-      }
-    } catch (e) {
-      // Ignore read errors
-    }
-  }
-  
   const ua = CF_CLEARANCE ? CF_UA : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
   
   let cookie = `PHPSESSID=${session}`;
-  if (CF_CLEARANCE) {
+  if (CF_CLEARANCE && CF_CLEARANCE !== 'none') {
     cookie += `; cf_clearance=${CF_CLEARANCE}`;
   }
   

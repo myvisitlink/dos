@@ -129,59 +129,11 @@ jobs:
 
       - name: Start cookie auto-refresh daemon
         run: |
-          cat > /tmp/refresh_cookie.sh << 'EOFSCRIPT'
-          #!/bin/bash
-          
-          COOKIE_FILE="/tmp/cf_clearance.txt"
-          UA_FILE="/tmp/cf_ua.txt"
-          LOG_FILE="/tmp/cookie-refresh.log"
-          
-          echo "[$(date)] Cookie refresh daemon started" | tee -a "$LOG_FILE"
-          
-          while true; do
-            sleep 1500  # 25 phút = 1500 giây
-            
-            echo "[$(date)] Refreshing cf_clearance..." | tee -a "$LOG_FILE"
-            
-            RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
-              -H "Content-Type: application/json" \
-              -d '{
-                "cmd": "request.get",
-                "url": "https://thanhhuyreal.com",
-                "maxTimeout": 60000
-              }')
-            
-            STATUS=$(echo "$RESPONSE" | jq -r '.status // "error"')
-            if [ "$STATUS" = "ok" ]; then
-              NEW_COOKIE=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | select(.name=="cf_clearance") | .value // empty')
-              NEW_UA=$(echo "$RESPONSE" | jq -r '.solution.userAgent // ""')
-            else
-              NEW_COOKIE=""
-              NEW_UA=""
-            fi
-            
-            if [ -n "$NEW_COOKIE" ] && [ "$NEW_COOKIE" != "null" ] && [ "$NEW_COOKIE" != "none" ]; then
-              echo "$NEW_COOKIE" > "$COOKIE_FILE"
-              echo "$NEW_UA" > "$UA_FILE"
-              echo "[$(date)] ✓ Updated cf_clearance: ${NEW_COOKIE:0:50}..." | tee -a "$LOG_FILE"
-            else
-              echo "[$(date)] ✗ Failed to refresh cookie (status: $STATUS)" | tee -a "$LOG_FILE"
-            fi
-          done
-          EOFSCRIPT
-          
-          chmod +x /tmp/refresh_cookie.sh
-          
-          # Save initial cookie & UA
-          echo "${{ steps.get_cookie.outputs.cf_clearance }}" > /tmp/cf_clearance.txt
-          echo "${{ steps.get_cookie.outputs.cf_ua }}" > /tmp/cf_ua.txt
-          
-          # Start background refresh
-          nohup /tmp/refresh_cookie.sh &
-          echo $! > /tmp/cookie-refresh.pid
-          
-          echo "Cookie refresh daemon started (PID: $(cat /tmp/cookie-refresh.pid))"
-          echo "Cookie will be refreshed every 25 minutes"
+          echo "Cookie auto-refresh: k6 uses initial cookie from env var"
+          echo "For tests >30min, workflow should be re-run with fresh cookie"
+          echo "Note: k6 cannot dynamically read files, so cookie refresh daemon is disabled"
+          echo ""
+          echo "Initial cookie will be valid for ~30 minutes"
 
       - name: Runner info
         run: |
@@ -204,8 +156,8 @@ jobs:
           PHP_LOGIN_PATH:    "/model/login"
           PHP_IDENTIFIER:    "lonussystem"
           PHP_PASSWORD:      "lonussystem123@"
-          CF_CLEARANCE_FILE: "/tmp/cf_clearance.txt"
-          CF_UA_FILE:        "/tmp/cf_ua.txt"
+          CF_CLEARANCE:      ${{ steps.get_cookie.outputs.cf_clearance }}
+          CF_UA:             ${{ steps.get_cookie.outputs.cf_ua }}
           PHP_FRESH_SESSION: "true"
           STAGES:            ${{ github.event.inputs.stages || '30s:50,60s:200,60s:500,360m:500' }}
           START_RATE:        "20"
@@ -218,8 +170,8 @@ jobs:
           ABORT_ON_BAN:      "false"
         run: |
           ulimit -n 131072 || true
-          echo "Starting login flood attack with auto cookie refresh..."
-          echo "Cookie will be auto-refreshed every 25 minutes"
+          echo "Starting login flood attack..."
+          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:50}..."
           k6 run --no-usage-report sites/thanhhuyreal/test-script-login.js
 
       # ─────────────────────────────────────────────────────────────
@@ -232,8 +184,8 @@ jobs:
           SITE_HOST:         "thanhhuyreal.com"
           PHP_IDENTIFIER:    "lonussystem"
           PHP_PASSWORD:      "lonussystem123@"
-          CF_CLEARANCE_FILE: "/tmp/cf_clearance.txt"
-          CF_UA_FILE:        "/tmp/cf_ua.txt"
+          CF_CLEARANCE:      ${{ steps.get_cookie.outputs.cf_clearance }}
+          CF_UA:             ${{ steps.get_cookie.outputs.cf_ua }}
           STAGES:            ${{ github.event.inputs.stages || '30s:200,60s:1000,60s:3000,360m:3000' }}
           START_RATE:        "50"
           PRE_VUS:           "300"
@@ -242,8 +194,8 @@ jobs:
           MAX_ERR_RATE:      "0.9"
         run: |
           ulimit -n 131072 || true
-          echo "Starting authenticated API flood with auto cookie refresh..."
-          echo "Cookie will be auto-refreshed every 25 minutes"
+          echo "Starting authenticated API flood..."
+          echo "CF_CLEARANCE: ${CF_CLEARANCE:0:50}..."
           k6 run --no-usage-report sites/thanhhuyreal/test-script-auth.js
 
       - name: Cleanup

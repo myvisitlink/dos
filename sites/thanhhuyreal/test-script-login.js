@@ -17,26 +17,15 @@ const LOGIN_PATH = __ENV.PHP_LOGIN_PATH || '/model/login';
 const IDENTIFIER = __ENV.PHP_IDENTIFIER || '';
 const PASSWORD   = __ENV.PHP_PASSWORD   || '';
 
-// cf_clearance từ file (auto-refresh mỗi 25 phút)
+// cf_clearance từ env var (updated externally by wrapper script)
 const CF_CLEARANCE_FILE = __ENV.CF_CLEARANCE_FILE || '';
 const CF_UA_FILE = __ENV.CF_UA_FILE || '';
 
 let CF_CLEARANCE = __ENV.CF_CLEARANCE || '';
 let CF_UA = __ENV.CF_UA || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
 
-// Read from file if available (for auto-refresh)
-if (CF_CLEARANCE_FILE && !CF_CLEARANCE) {
-  try {
-    const fs = require('fs');
-    CF_CLEARANCE = fs.readFileSync(CF_CLEARANCE_FILE, 'utf8').trim();
-    if (CF_UA_FILE) {
-      CF_UA = fs.readFileSync(CF_UA_FILE, 'utf8').trim();
-    }
-    console.log(`Loaded cf_clearance from ${CF_CLEARANCE_FILE}: ${CF_CLEARANCE.substring(0, 50)}...`);
-  } catch (e) {
-    console.warn(`Cannot read ${CF_CLEARANCE_FILE}: ${e.message}`);
-  }
-}
+// Note: k6 cannot read files dynamically, so we rely on env vars updated externally
+console.log(`Using CF_CLEARANCE: ${CF_CLEARANCE ? CF_CLEARANCE.substring(0, 50) + '...' : 'not set'}`);
 
 const FRESH_SESSION = (__ENV.PHP_FRESH_SESSION || 'true').toLowerCase() === 'true';
 
@@ -99,21 +88,7 @@ export const options = {
 
 // ===== Inject cf_clearance vào cookie jar trước mỗi request =====
 function setCfCookie() {
-  // Re-read cookie from file if auto-refresh is enabled
-  if (CF_CLEARANCE_FILE) {
-    try {
-      const fs = require('fs');
-      const newCookie = fs.readFileSync(CF_CLEARANCE_FILE, 'utf8').trim();
-      if (newCookie && newCookie !== CF_CLEARANCE) {
-        CF_CLEARANCE = newCookie;
-        console.log(`Cookie refreshed: ${CF_CLEARANCE.substring(0, 30)}...`);
-      }
-    } catch (e) {
-      // Ignore read errors
-    }
-  }
-  
-  if (!CF_CLEARANCE) return;
+  if (!CF_CLEARANCE || CF_CLEARANCE === 'none') return;
   
   http.cookieJar().set(BASE_URL, 'cf_clearance', CF_CLEARANCE, {
     domain: 'thanhhuyreal.com',
